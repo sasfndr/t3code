@@ -59,7 +59,7 @@ To rebuild on an Apple Silicon Mac with the repository's development prerequisit
 vp i
 vp env exec --node 24.13.1 node scripts/build-desktop-artifact.ts \
   --platform mac --target zip --arch arm64 \
-  --build-version 0.0.42-switch.4 --output-dir ./release-switch
+  --build-version 0.0.42-switch.5 --output-dir ./release-switch
 ```
 
 The archive contains the app. Local builds are not notarized by Apple. Keep

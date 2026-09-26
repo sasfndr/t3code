@@ -75,6 +75,20 @@ export interface ThreadTitleGenerationResult {
   needsRefinement?: boolean | undefined;
 }
 
+export interface RouteTaskInput {
+  cwd: string;
+  message: string;
+  routes: ReadonlyArray<{ id: string; name: string; description: string }>;
+  /** The router model. */
+  modelSelection: ModelSelection;
+}
+
+export interface RouteTaskResult {
+  /** A route id from the input, or null when no route fits. */
+  routeId: string | null;
+  reason: string;
+}
+
 /**
  * TextGeneration - Service tag for commit and change request text generation.
  */
@@ -106,6 +120,11 @@ export class TextGeneration extends Context.Service<
     readonly generateThreadTitle: (
       input: ThreadTitleGenerationInput,
     ) => Effect.Effect<ThreadTitleGenerationResult, TextGenerationError>;
+
+    /** Classify a task onto one orchestrator route. Providers that cannot do this omit it. */
+    readonly routeTask?: (
+      input: RouteTaskInput,
+    ) => Effect.Effect<RouteTaskResult, TextGenerationError>;
   }
 >()("t3/textGeneration/TextGeneration") {}
 
@@ -113,7 +132,8 @@ type TextGenerationOp =
   | "generateCommitMessage"
   | "generatePrContent"
   | "generateBranchName"
-  | "generateThreadTitle";
+  | "generateThreadTitle"
+  | "routeTask";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -164,6 +184,20 @@ export const make = Effect.gen(function* () {
               ));
             return yield* textGeneration.generateThreadTitle({ ...input, linkedContext });
           }),
+        ),
+      ),
+    routeTask: (input) =>
+      resolveInstance(registry, "routeTask", input.modelSelection.instanceId).pipe(
+        Effect.flatMap((textGeneration) =>
+          textGeneration.routeTask
+            ? textGeneration.routeTask(input)
+            : Effect.fail(
+                new TextGenerationError({
+                  operation: "routeTask",
+                  detail:
+                    "This provider cannot act as the router. Choose a Claude, Codex or Grok router model.",
+                }),
+              ),
         ),
       ),
   });

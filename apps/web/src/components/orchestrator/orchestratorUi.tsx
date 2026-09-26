@@ -34,7 +34,7 @@ export const ROUTING_MODES: ReadonlyArray<{
     value: "auto",
     label: "Auto",
     short: "Auto",
-    description: "Each task goes to the model your routes choose.",
+    description: "A router model reads each task and sends it to the right specialist.",
     icon: WaypointsIcon,
   },
   {
@@ -98,13 +98,15 @@ export function routingModelName(
   return findRoutingModel(providers, selection)?.model.name ?? selection.model;
 }
 
+/** Drivers whose text generation can answer the router prompt (see server routeTask). */
+export const ROUTER_DRIVERS: ReadonlySet<string> = new Set(["claudeAgent", "codex", "grok"]);
+
 // Starting points for new routes. Phrases and efforts are editable preferences, not claims about
 // which model is objectively best.
 interface RouteTemplate {
   readonly id: string;
   readonly name: string;
   readonly description: string;
-  readonly match: readonly string[];
   readonly drivers: readonly string[];
   readonly models: readonly string[];
   readonly efforts: AgentRoutingRule["efforts"];
@@ -115,22 +117,6 @@ export const ROUTE_TEMPLATES: readonly RouteTemplate[] = [
     id: "design",
     name: "Design & frontend",
     description: "UI, UX, visual design, product feel, copy and frontend code.",
-    match: [
-      "frontend",
-      "front-end",
-      "design",
-      "redesign",
-      "UI",
-      "UX",
-      "layout",
-      "CSS",
-      "styling",
-      "typography",
-      "animation",
-      "component",
-      "landing page",
-      "copy",
-    ],
     drivers: ["claudeAgent"],
     models: ["claude-opus-5-5"],
     efforts: { fast: "medium", balanced: "high", thorough: "high" },
@@ -139,21 +125,6 @@ export const ROUTE_TEMPLATES: readonly RouteTemplate[] = [
     id: "backend",
     name: "Backend & agentic",
     description: "APIs, data, infrastructure, integrations and long agentic builds.",
-    match: [
-      "backend",
-      "back-end",
-      "API",
-      "database",
-      "schema",
-      "migration",
-      "server",
-      "infrastructure",
-      "auth",
-      "queue",
-      "worker",
-      "integration",
-      "orchestrator",
-    ],
     drivers: ["codex"],
     models: ["gpt-6-astra"],
     efforts: { fast: "medium", balanced: "high", thorough: "high" },
@@ -162,7 +133,6 @@ export const ROUTE_TEMPLATES: readonly RouteTemplate[] = [
     id: "debugging",
     name: "Tests & debugging",
     description: "Failing tests, bugs, regressions, CI and type errors.",
-    match: ["test", "tests", "bug", "debug", "failing", "regression", "CI", "lint", "typecheck"],
     drivers: ["codex"],
     models: ["gpt-6-astra"],
     efforts: { fast: "medium", balanced: "medium", thorough: "high" },
@@ -171,7 +141,6 @@ export const ROUTE_TEMPLATES: readonly RouteTemplate[] = [
     id: "research",
     name: "Research & answers",
     description: "Questions, explanations, comparisons and quick lookups.",
-    match: ["research", "explain", "compare", "summarize", "summarise", "look up", "question"],
     drivers: ["grok", "kimi", "claudeAgent"],
     models: [],
     efforts: { fast: "low", balanced: "medium", thorough: "high" },
@@ -231,7 +200,7 @@ export function ruleFromTemplate(
     name: template.name,
     description: template.description,
     enabled: true,
-    match: [...template.match],
+    match: [],
     selection,
     efforts: supportedEfforts(providers, selection, template.efforts),
     fallback: null,

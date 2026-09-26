@@ -6,7 +6,11 @@ import {
   type AgentRoutingSettings,
   type ServerProvider,
 } from "@t3tools/contracts";
+import { it as effectIt } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import { TextGenerationError } from "@t3tools/contracts";
 import { resolveAgentRouting, agentExecutionInstructions } from "./agentRouting.ts";
+import { chooseAgentRoute } from "./agentRouter.ts";
 
 const backend = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" };
 const design = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-5-5" };
@@ -48,47 +52,46 @@ const settings: AgentRoutingSettings = {
       name: "Design",
       description: "",
       enabled: true,
-      match: ["UI", "design", "front-end"],
+      match: [],
       selection: design,
       efforts: { fast: "medium", balanced: "high", thorough: "high" },
       fallback: null,
     },
   ],
 };
-const route = (task: string, override: Partial<AgentRoutingSettings> = {}, catalog = providers) =>
+const route = (
+  ruleId: string | null,
+  override: Partial<AgentRoutingSettings> = {},
+  catalog = providers,
+) =>
   resolveAgentRouting({
     settings: { ...settings, ...override },
     current: backend,
-    task,
     providers: catalog,
+    choice: { ruleId, reason: "router says so" },
   });
 
 describe("agent routing policy", () => {
-  it("honors the model lock even when a different task rule matches", () => {
-    expect(route("Design the UI", { mode: "single", singleModel: backend }).selection).toEqual(
-      backend,
-    );
+  it("honors the model lock whatever the router chose", () => {
+    expect(route("design", { mode: "single", singleModel: backend }).selection).toEqual(backend);
   });
   it("never silently replaces an unavailable locked model", () => {
-    expect(() => route("Design", { mode: "single", singleModel: design }, [providers[0]!])).toThrow(
+    expect(() => route("design", { mode: "single", singleModel: design }, [providers[0]!])).toThrow(
       "locked model is unavailable",
     );
   });
-  it("does not match short UI phrases inside unrelated words", () => {
-    expect(route("Build an API query").selection).toEqual(backend);
-    expect(route("Redesign front-end navigation").selection.instanceId).toBe(design.instanceId);
-  });
-  it("uses priority-specific effort and does not equate thorough with max", () => {
-    expect(route("Design the UI", { priority: "fast" }).selection.options).toEqual([
-      { id: "effort", value: "medium" },
-    ]);
-    expect(route("Design the UI", { priority: "thorough" }).selection.options).toEqual([
+  it("runs the router's route with the priority's effort and keeps its reason", () => {
+    const decision = route("design", { priority: "fast" });
+    expect(decision.selection).toEqual({ ...design, options: [{ id: "effort", value: "medium" }] });
+    expect(decision.routerReason).toBe("router says so");
+    expect(decision.reason).toBe("Routed to claude-opus-5-5 · medium · Design");
+    expect(route("design", { priority: "thorough" }).selection.options).toEqual([
       { id: "effort", value: "high" },
     ]);
   });
   it("refuses unsupported configured effort", () => {
     expect(() =>
-      route("Design", {
+      route("design", {
         rules: [
           { ...settings.rules[0]!, efforts: { fast: "max", balanced: "max", thorough: "max" } },
         ],
@@ -96,64 +99,35 @@ describe("agent routing policy", () => {
     ).toThrow("unavailable");
   });
   it("uses only an explicitly configured available fallback with its own options", () => {
-    expect(() => route("Design", {}, [providers[0]!])).toThrow("no available fallback");
+    expect(() => route("design", {}, [providers[0]!])).toThrow("no available fallback");
     const fallback = { ...backend, options: [{ id: "effort", value: "medium" }] };
     expect(
-      route("Design", { rules: [{ ...settings.rules[0]!, fallback }] }, [providers[0]!]).selection,
+      route("design", { rules: [{ ...settings.rules[0]!, fallback }] }, [providers[0]!]).selection,
     ).toEqual(fallback);
   });
-  it("manual mode preserves the exact user's model and effort", () => {
-    expect(route("Design", { mode: "manual" }).selection).toEqual(backend);
+  it("rejects a route that is missing or turned off", () => {
+    expect(() => route("nope")).toThrow("missing or turned off");
+    expect(() => route("design", { rules: [{ ...settings.rules[0]!, enabled: false }] })).toThrow(
+      "missing or turned off",
+    );
   });
-  it("keeps direct execution explicit and carries the evolving brief instruction", () => {
-    const instruction = agentExecutionInstructions(settings);
-    expect(instruction).toContain("Do not spawn sub-agents");
-    expect(instruction).toContain("one evolving brief");
-  });
-  it("routes to the rule with the most phrase hits, not merely the first match", () => {
-    const backendRule = {
-      ...settings.rules[0]!,
-      id: "backend",
-      name: "Backend",
-      match: ["API", "database", "migration"],
-      selection: backend,
-    };
-    const decision = route("Design the API database migration", {
-      rules: [settings.rules[0]!, backendRule],
-    });
-    expect(decision.ruleId).toBe("backend");
-    expect(decision.matched).toEqual(["API", "database", "migration"]);
-    expect(decision.reason).toBe("Routed to gpt-6-astra · high · Backend");
-  });
-  it("keeps rule order as the tie-breaker", () => {
-    const other = { ...settings.rules[0]!, id: "other", match: ["UI"], selection: backend };
-    expect(route("Tweak the UI", { rules: [settings.rules[0]!, other] }).ruleId).toBe("design");
-  });
-  it("uses the default route for unmatched work, with its priority effort", () => {
-    const decision = route("Summarise yesterday's notes", {
+  it("sends unrouted work to Everything else, or keeps the current model", () => {
+    expect(route(null).selection).toEqual(backend);
+    expect(route(null).source).toBe("unmatched");
+    const decision = route(null, {
       defaultRoute: { selection: design, efforts: { fast: "medium", balanced: "", thorough: "" } },
       priority: "fast",
     });
     expect(decision.source).toBe("default");
     expect(decision.selection).toEqual({ ...design, options: [{ id: "effort", value: "medium" }] });
   });
-  it("keeps the current model when nothing matches and no default route exists", () => {
-    const decision = route("Summarise yesterday's notes");
-    expect(decision.source).toBe("unmatched");
-    expect(decision.selection).toEqual(backend);
+  it("manual mode preserves the exact user's model and effort", () => {
+    expect(route("design", { mode: "manual" }).selection).toEqual(backend);
   });
-  it("assigns a forced specialist without matching the task text", () => {
-    const decision = resolveAgentRouting({
-      settings,
-      current: backend,
-      task: "Anything at all",
-      providers,
-      ruleId: "design",
-    });
-    expect(decision.selection.instanceId).toBe(design.instanceId);
-    expect(() =>
-      resolveAgentRouting({ settings, current: backend, task: "x", providers, ruleId: "nope" }),
-    ).toThrow("missing or disabled");
+  it("keeps direct execution explicit and carries the evolving brief instruction", () => {
+    const instruction = agentExecutionInstructions(settings);
+    expect(instruction).toContain("Do not spawn sub-agents");
+    expect(instruction).toContain("one evolving brief");
   });
   it("briefs delegating parents with each specialist's model and purpose", () => {
     const instruction = agentExecutionInstructions(
@@ -166,4 +140,36 @@ describe("agent routing policy", () => {
     );
     expect(instruction).toContain("- design: Design (claude-opus-5-5) — Owns visual polish");
   });
+});
+
+describe("router selection", () => {
+  const textGeneration = (routeId: string | null, fail = false) => ({
+    routeTask: () =>
+      fail
+        ? Effect.fail(new TextGenerationError({ operation: "routeTask", detail: "CLI missing" }))
+        : Effect.succeed({ routeId, reason: "fits" }),
+  });
+  const auto = { ...settings, router: backend };
+  const choose = (s: AgentRoutingSettings, fail = false) =>
+    chooseAgentRoute({
+      settings: s,
+      task: "x",
+      cwd: "/",
+      textGeneration: textGeneration("design", fail),
+    });
+  effectIt.effect("asks the router model and passes its choice through", () =>
+    Effect.gen(function* () {
+      expect(yield* choose(auto)).toEqual({ ruleId: "design", reason: "fits" });
+    }),
+  );
+  effectIt.effect("falls back to Everything else, with a reason, when routing cannot run", () =>
+    Effect.gen(function* () {
+      expect(yield* choose({ ...auto, router: null })).toEqual({
+        ruleId: null,
+        reason: "No router model chosen",
+      });
+      expect((yield* choose(auto, true)).reason).toBe("Router unavailable: CLI missing");
+      expect((yield* choose({ ...auto, rules: [] })).ruleId).toBeNull();
+    }),
+  );
 });

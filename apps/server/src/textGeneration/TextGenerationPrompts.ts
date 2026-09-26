@@ -327,3 +327,38 @@ export function buildThreadTitlePrompt(input: ThreadTitlePromptInput) {
 
   return { prompt, outputSchema };
 }
+
+export interface RouteTaskPromptInput {
+  readonly message: string;
+  readonly routes: ReadonlyArray<{
+    readonly id: string;
+    readonly name: string;
+    readonly description: string;
+  }>;
+}
+
+/** Ask a fast model which specialist route fits a task. `none` means no route clearly fits. */
+export function buildRouteTaskPrompt(input: RouteTaskPromptInput) {
+  const routes = input.routes
+    .map(
+      (route) =>
+        `- id: ${route.id}\n  name: ${route.name}\n  handles: ${route.description || route.name}`,
+    )
+    .join("\n");
+  const prompt = [
+    "You route software tasks to the best specialist agent. Read the task and choose exactly one route id from the list, judging by what the work actually requires, not by isolated keywords.",
+    "If the task spans several areas, pick the route that owns the largest or hardest part of the work.",
+    'Answer "none" only when no route reasonably fits.',
+    "",
+    "Routes:",
+    routes,
+    "",
+    "Task:",
+    limitSection(input.message, 12_000),
+  ].join("\n");
+  const outputSchema = Schema.Struct({
+    routeId: Schema.String,
+    reason: Schema.String,
+  });
+  return { prompt, outputSchema };
+}

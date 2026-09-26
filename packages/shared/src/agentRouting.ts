@@ -7,6 +7,19 @@ import type {
   ServerProviderModel,
 } from "@t3tools/contracts";
 
+/** Enabled routes in the shape the router prompt needs. */
+export function routerRoutes(settings: AgentRoutingSettings) {
+  return settings.rules
+    .filter((rule) => rule.enabled)
+    .map((rule) => ({ id: rule.id, name: rule.name, description: routeDescription(rule) }));
+}
+
+/** What a route handles; routes saved before descriptions existed describe themselves by their old keywords. */
+export function routeDescription(rule: Pick<AgentRoutingRule, "description" | "match">): string {
+  if (rule.description.trim()) return rule.description.trim();
+  return rule.match.length ? `Work involving ${rule.match.join(", ")}.` : "";
+}
+
 /** Option ids providers use for their reasoning-effort select. */
 export const ROUTING_EFFORT_OPTION_IDS: ReadonlySet<string> = new Set([
   "effort",
@@ -25,8 +38,8 @@ export interface AgentRoutingDecision {
   readonly source: AgentRoutingSource;
   readonly ruleId?: string;
   readonly ruleName?: string;
-  /** Phrases from the winning rule that appeared in the task. */
-  readonly matched: readonly string[];
+  /** The router model's one-line explanation, when a router chose the route. */
+  readonly routerReason?: string;
   readonly effort?: string;
   readonly usedFallback: boolean;
 }
@@ -63,42 +76,6 @@ export function isRoutingSelectionAvailable(
     provider.availability !== "unavailable" &&
     provider.auth.status !== "unauthenticated"
   );
-}
-
-function phraseMatches(task: string, phrase: string): boolean {
-  const escaped = phrase.toLocaleLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, "u").test(task);
-}
-
-/** Distinct phrases of `rule` found in `task`, as whole words and case-insensitively. */
-export function matchRoutingRule(rule: AgentRoutingRule, task: string): string[] {
-  const lower = task.toLocaleLowerCase();
-  const seen = new Set<string>();
-  return rule.match.filter((phrase) => {
-    const key = phrase.toLocaleLowerCase();
-    if (seen.has(key) || !phraseMatches(lower, phrase)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-// Multi-word phrases are more specific than single words, so they weigh a little more.
-const phraseWeight = (phrase: string) => 1 + (phrase.trim().split(/\s+/).length - 1) * 0.5;
-
-/** The enabled rule with the highest phrase score; earlier rules win ties. */
-export function pickRoutingRule(
-  rules: readonly AgentRoutingRule[],
-  task: string,
-): { rule: AgentRoutingRule; matched: string[] } | null {
-  let best: { rule: AgentRoutingRule; matched: string[]; score: number } | null = null;
-  for (const rule of rules) {
-    if (!rule.enabled) continue;
-    const matched = matchRoutingRule(rule, task);
-    if (matched.length === 0) continue;
-    const score = matched.reduce((total, phrase) => total + phraseWeight(phrase), 0);
-    if (!best || score > best.score) best = { rule, matched, score };
-  }
-  return best ? { rule: best.rule, matched: best.matched } : null;
 }
 
 function modelName(providers: readonly ServerProvider[], selection: ModelSelection): string {
@@ -140,16 +117,23 @@ function applyEffort(
 const withEffortLabel = (name: string, effort: string | undefined) =>
   effort ? `${name} · ${effort}` : name;
 
+/** The route the router model chose for a task. `ruleId: null` means no route fits. */
+export interface AgentRouteChoice {
+  readonly ruleId: string | null;
+  readonly reason?: string;
+}
+
 /**
- * Preferences, not benchmark claims. Rule order, phrases and every effort choice are user-owned.
- * `ruleId` forces a specific specialist (delegated work) instead of matching the task text.
+ * Turn a route choice into the exact model and effort to run. The choice itself comes from the
+ * router model (or a delegating parent naming a specialist); this function is pure so the server
+ * and the settings preview agree. Efforts are user-owned preferences, not benchmark claims.
  */
 export function resolveAgentRouting(input: {
   readonly settings: AgentRoutingSettings;
   readonly current: ModelSelection;
-  readonly task: string;
   readonly providers: readonly ServerProvider[];
-  readonly ruleId?: string;
+  /** Required in Auto mode; ignored by Manual and One model. */
+  readonly choice?: AgentRouteChoice;
 }): AgentRoutingDecision {
   const { settings, current, providers } = input;
   if (settings.mode === "manual") {
@@ -157,7 +141,6 @@ export function resolveAgentRouting(input: {
       selection: current,
       reason: "Manual model selection",
       source: "manual",
-      matched: [],
       usedFallback: false,
     };
   }
@@ -172,19 +155,20 @@ export function resolveAgentRouting(input: {
       selection: settings.singleModel,
       reason: `Locked to ${modelName(providers, settings.singleModel)}`,
       source: "lock",
-      matched: [],
       usedFallback: false,
     };
   }
 
+  const choice = input.choice ?? { ruleId: null };
+  const routerReason = choice.reason ? { routerReason: choice.reason } : {};
   const picked =
-    input.ruleId !== undefined
-      ? (() => {
-          const rule = settings.rules.find((entry) => entry.id === input.ruleId && entry.enabled);
-          if (!rule) throw new Error(`Routing rule “${input.ruleId}” is missing or disabled.`);
-          return { rule, matched: [] as string[] };
-        })()
-      : pickRoutingRule(settings.rules, input.task);
+    choice.ruleId === null
+      ? null
+      : (() => {
+          const rule = settings.rules.find((entry) => entry.id === choice.ruleId && entry.enabled);
+          if (!rule) throw new Error(`Route “${choice.ruleId}” is missing or turned off.`);
+          return { rule };
+        })();
 
   if (!picked) {
     const route = settings.defaultRoute;
@@ -193,7 +177,6 @@ export function resolveAgentRouting(input: {
         selection: current,
         reason: `No route matched · kept ${modelName(providers, current)}`,
         source: "unmatched",
-        matched: [],
         usedFallback: false,
       };
     }
@@ -212,13 +195,12 @@ export function resolveAgentRouting(input: {
       selection: applied.selection,
       reason: `Routed to ${withEffortLabel(modelName(providers, route.selection), applied.effort)} · Default route`,
       source: "default",
-      matched: [],
       usedFallback: false,
       ...(applied.effort ? { effort: applied.effort } : {}),
     };
   }
 
-  const { rule, matched } = picked;
+  const { rule } = picked;
   const primaryAvailable = isRoutingSelectionAvailable(rule.selection, providers);
   if (
     !primaryAvailable &&
@@ -238,8 +220,8 @@ export function resolveAgentRouting(input: {
     source: "rule",
     ruleId: rule.id,
     ruleName: rule.name,
-    matched,
     usedFallback: !primaryAvailable,
+    ...routerReason,
     ...(applied.effort ? { effort: applied.effort } : {}),
   };
 }

@@ -45,6 +45,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -1229,7 +1230,7 @@ const antigravityInstanceRouting = makeProviderServiceLayer({
 });
 antigravityInstanceRouting.layer("ProviderServiceLive instance-owned conversations", (it) => {
   it.effect(
-    "does not replace a native conversation with another instance or a removed-instance fallback",
+    "hands a native conversation to another account fresh, but not to a removed-instance fallback",
     () =>
       Effect.gen(function* () {
         const provider = yield* ProviderService.ProviderService;
@@ -1253,7 +1254,7 @@ antigravityInstanceRouting.layer("ProviderServiceLive instance-owned conversatio
             const originalBinding = yield* directory.getBinding(threadId);
             replacementAntigravity.startSession.mockClear();
 
-            const error = yield* Effect.flip(
+            const result = yield* Effect.result(
               provider.startSession(threadId, {
                 providerInstanceId: replacementAntigravityInstanceId,
                 threadId,
@@ -1262,12 +1263,27 @@ antigravityInstanceRouting.layer("ProviderServiceLive instance-owned conversatio
               }),
             );
 
+            if (!originalAvailable) {
+              // The previous account's identity is unknown, so nothing is started or rebound.
+              assert.isTrue(Result.isFailure(result));
+              assert.equal(replacementAntigravity.startSession.mock.calls.length, 0);
+              assert.deepEqual(yield* directory.getBinding(threadId), originalBinding);
+              continue;
+            }
+            assert.isTrue(Result.isSuccess(result));
+            // The other account never receives the first account's native resume state...
+            assert.equal(replacementAntigravity.startSession.mock.calls.length, 1);
             assert.equal(
-              error._tag,
-              originalAvailable ? "ProviderValidationError" : "ProviderUnsupportedError",
+              replacementAntigravity.startSession.mock.calls[0]?.[0].resumeCursor,
+              undefined,
             );
-            assert.equal(replacementAntigravity.startSession.mock.calls.length, 0);
-            assert.deepEqual(yield* directory.getBinding(threadId), originalBinding);
+            // ...and the next turn carries the saved conversation instead.
+            const binding = Option.getOrThrow(yield* directory.getBinding(threadId));
+            assert.equal(binding.providerInstanceId, replacementAntigravityInstanceId);
+            assert.equal(
+              (binding.runtimePayload as Record<string, unknown>).pendingProviderHandoff,
+              true,
+            );
           }
         }
       }),

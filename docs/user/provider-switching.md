@@ -15,8 +15,9 @@ back into a fresh session there.
 Selecting a model prepares the next message; it does not send a request by itself.
 If the replacement fails to start, the old session and its tool access remain usable.
 If sending fails, the next attempt retains the handoff context. A switch reports
-an error if the previous provider cannot be stopped. Switching accounts with incompatible native session
-storage within one provider remains unsupported.
+an error if the previous provider cannot be stopped. Switching to another account of the same
+provider (for example a second Claude login) works the same way: when the accounts keep separate
+session storage, the new account starts fresh with the handoff.
 
 Each conversation keeps one private handoff transcript, updated on a switch.
 Deleting the conversation removes it; startup cleans abandoned files and collapses
@@ -59,7 +60,7 @@ To rebuild on an Apple Silicon Mac with the repository's development prerequisit
 vp i
 vp env exec --node 24.13.1 node scripts/build-desktop-artifact.ts \
   --platform mac --target zip --arch arm64 \
-  --build-version 0.0.42-switch.5 --output-dir ./release-switch
+  --build-version 0.0.42-switch.6 --output-dir ./release-switch
 ```
 
 The archive contains the app. Local builds are not notarized by Apple. Keep

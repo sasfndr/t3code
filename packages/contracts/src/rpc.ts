@@ -88,6 +88,11 @@ import {
 } from "./review.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
 import {
+  AgentRoutePreviewError,
+  AgentRoutePreviewInput,
+  AgentRoutePreviewResult,
+} from "./agentRouting.ts";
+import {
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
   OrchestrationDispatchCommandError,
@@ -364,6 +369,7 @@ export const WS_METHODS = {
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
+  orchestratorPreviewRoute: "orchestrator.previewRoute",
   serverUpdateProvider: "server.updateProvider",
   serverUpdateServer: "server.updateServer",
   serverUpdateServerWithProgress: "server.updateServerWithProgress",
@@ -467,6 +473,12 @@ const WsServerGetConfigRpc = Rpc.make(WS_METHODS.serverGetConfig, {
   payload: Schema.Struct({}),
   success: ServerConfig,
   error: Schema.Union([KeybindingsConfigError, ServerSettingsError, EnvironmentAuthorizationError]),
+});
+
+const WsOrchestratorPreviewRouteRpc = Rpc.make(WS_METHODS.orchestratorPreviewRoute, {
+  payload: AgentRoutePreviewInput,
+  success: AgentRoutePreviewResult,
+  error: Schema.Union([AgentRoutePreviewError, EnvironmentAuthorizationError]),
 });
 
 const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, {
@@ -1395,6 +1407,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
+  WsOrchestratorPreviewRouteRpc,
   WsServerUpdateProviderRpc,
   WsProviderConsumeResetCreditRpc,
   WsProviderAuthStartRpc,

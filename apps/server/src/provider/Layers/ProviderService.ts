@@ -1477,31 +1477,35 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           );
         }
         const persistedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        // Another account of the same driver cannot read this session's native resume state
+        // (e.g. two Claude homes). Start fresh and hand the saved conversation over instead,
+        // exactly like a cross-provider switch.
+        let incompatibleContinuation = false;
         if (
           persistedBinding?.provider === resolvedProvider &&
-          persistedBinding.providerInstanceId !== resolvedInstanceId &&
-          (input.resumeCursor != null || persistedBinding.resumeCursor != null)
+          persistedBinding.providerInstanceId !== resolvedInstanceId
         ) {
           const previousInstanceId = yield* requireBindingInstanceId(
             "ProviderService.startSession",
             persistedBinding,
           );
           const previousInfo = yield* registry.getInstanceInfo(previousInstanceId);
-          if (
+          incompatibleContinuation =
             previousInfo.continuationIdentity.continuationKey !==
-            instanceInfo.continuationIdentity.continuationKey
-          ) {
-            return yield* toValidationError(
-              "ProviderService.startSession",
-              `Thread '${threadId}' cannot switch from instance '${previousInstanceId}' to '${resolvedInstanceId}' because their provider resume state is incompatible.`,
-            );
-          }
+            instanceInfo.continuationIdentity.continuationKey;
         }
-        const effectiveResumeCursor =
-          input.resumeCursor ??
-          (persistedBinding?.providerInstanceId === resolvedInstanceId
-            ? persistedBinding.resumeCursor
-            : undefined);
+        const needsHandoff =
+          persistedBinding !== undefined &&
+          (persistedBinding.provider !== resolvedProvider || incompatibleContinuation);
+        // Instances sharing native storage (same continuation key) can resume each other's sessions.
+        const sharesNativeSession =
+          persistedBinding !== undefined &&
+          persistedBinding.provider === resolvedProvider &&
+          !incompatibleContinuation;
+        const effectiveResumeCursor = incompatibleContinuation
+          ? undefined
+          : (input.resumeCursor ??
+            (sharesNativeSession ? persistedBinding.resumeCursor : undefined));
         const effectiveCwd =
           input.cwd ??
           (persistedBinding?.providerInstanceId === resolvedInstanceId
@@ -1569,6 +1573,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           retiredSessionLifecycles.delete(sessionLifecycleKey(resolvedInstanceId, threadId));
           const session = yield* adapter.startSession({
             ...input,
+            ...(incompatibleContinuation ? { resumeCursor: undefined } : {}),
             providerInstanceId: resolvedInstanceId,
             ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
             ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
@@ -1583,9 +1588,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           yield* stopStaleSessionsForThread({ threadId, currentInstanceId: resolvedInstanceId });
           yield* upsertSessionBinding(next, threadId, {
             modelSelection: input.modelSelection,
-            ...(persistedBinding !== undefined && persistedBinding.provider !== resolvedProvider
-              ? { pendingProviderHandoff: true }
-              : {}),
+            ...(needsHandoff ? { pendingProviderHandoff: true } : {}),
           });
           if (replacing && previousMcp) yield* revokeMcpCredential(previousMcp.providerSessionId);
           return next;

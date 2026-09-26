@@ -11,6 +11,9 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import { resolveAgentRouting } from "@t3tools/shared/agentRouting";
+import { chooseAgentRoute } from "./orchestration/agentRouter.ts";
+import { TextGeneration } from "./textGeneration/TextGeneration.ts";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -563,6 +566,10 @@ const makeWsRpcLayer = (
         yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+      const routerTextGeneration: Pick<TextGeneration["Service"], "routeTask"> = Option.getOrElse(
+        yield* Effect.serviceOption(TextGeneration),
+        () => ({}),
+      );
       const modelManifest = yield* ModelManifest.ModelManifest;
       const providerVersionCache = yield* ProviderMaintenance.ProviderVersionCache;
       const providerService = yield* ProviderService.ProviderService;
@@ -2356,6 +2363,59 @@ const makeWsRpcLayer = (
             {
               "rpc.aggregate": "server",
             },
+          ),
+        [WS_METHODS.orchestratorPreviewRoute]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.orchestratorPreviewRoute,
+            Effect.gen(function* () {
+              const providers = yield* providerRegistry.getProviders;
+              const settings = input.settings;
+              const current =
+                settings.defaultRoute?.selection ??
+                settings.rules.find((rule) => rule.enabled)?.selection ??
+                settings.singleModel ??
+                settings.router;
+              const choice = yield* chooseAgentRoute({
+                settings,
+                task: input.task,
+                cwd: config.cwd,
+                textGeneration: routerTextGeneration,
+              });
+              const routerReason = choice.reason ?? null;
+              if (!current)
+                return {
+                  source: "unmatched" as const,
+                  ruleId: null,
+                  selection: null,
+                  effort: null,
+                  usedFallback: false,
+                  routerReason,
+                  problem: "Add a route first.",
+                };
+              try {
+                const decision = resolveAgentRouting({ settings, current, providers, choice });
+                return {
+                  source: decision.source,
+                  ruleId: decision.ruleId ?? null,
+                  selection: decision.source === "unmatched" ? null : decision.selection,
+                  effort: decision.effort ?? null,
+                  usedFallback: decision.usedFallback,
+                  routerReason,
+                  problem: null,
+                };
+              } catch (error) {
+                return {
+                  source: choice.ruleId ? ("rule" as const) : ("default" as const),
+                  ruleId: choice.ruleId,
+                  selection: null,
+                  effort: null,
+                  usedFallback: false,
+                  routerReason,
+                  problem: error instanceof Error ? error.message : "This route cannot run.",
+                };
+              }
+            }),
+            { "rpc.aggregate": "orchestrator" },
           ),
         [WS_METHODS.serverRefreshProviders]: (input) =>
           observeRpcEffect(

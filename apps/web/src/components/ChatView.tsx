@@ -2163,22 +2163,35 @@ export default function ChatView(props: ChatViewProps) {
     () => resolveProjectSettings(settings, activeProject?.id ?? null, activeProject ?? undefined),
     [activeProject, settings],
   );
+  // The composer edits whatever the project actually uses: its own override if it has one,
+  // otherwise the environment settings shown on Settings → Orchestrator.
   const setAgentRouting = useCallback(
     (agentRouting: AgentRoutingSettings) => {
-      updateRoutingSettings(
-        activeProject
-          ? {
-              projectSettingsOverrides: {
-                [activeProject.id]: {
-                  ...settings.projectSettingsOverrides[activeProject.id],
-                  agentRouting,
-                },
-              },
-            }
-          : { agentRouting },
-      );
+      const projectOverride = activeProject
+        ? settings.projectSettingsOverrides[activeProject.id]
+        : undefined;
+      if (!activeProject || !projectOverride?.agentRouting) {
+        updateRoutingSettings({ agentRouting });
+        return;
+      }
+      updateRoutingSettings({
+        projectSettingsOverrides: {
+          [activeProject.id]: {
+            ...projectOverride,
+            agentRouting: {
+              ...agentRouting,
+              router: agentRouting.router ?? settings.agentRouting.router,
+            },
+          },
+        },
+      });
     },
-    [activeProject, settings.projectSettingsOverrides, updateRoutingSettings],
+    [
+      activeProject,
+      settings.agentRouting.router,
+      settings.projectSettingsOverrides,
+      updateRoutingSettings,
+    ],
   );
   const activeProjectScripts = useMemo(
     () => (activeProject ? resolveProjectScripts(settings, activeProject) : []),

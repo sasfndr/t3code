@@ -1,6 +1,7 @@
 import { resolveBackgroundModelSelection } from "@t3tools/shared/serverSettings";
 import { withWorkspaceLease } from "../../workspace/workspaceLease.ts";
 import { agentExecutionInstructions, resolveAgentRouting } from "../agentRouting.ts";
+import { chooseAgentRoute } from "../agentRouter.ts";
 import { delegatedDescendantsFromActivities } from "../agentTaskLinks.ts";
 import {
   type ChatAttachment,
@@ -672,7 +673,12 @@ const make = Effect.gen(function* () {
         createdAt,
       });
     }
-    const changingDriver = currentInfo.driverKind !== desiredInfo.driverKind;
+    // A different account of the same driver with separate native storage cannot resume this
+    // session either; it gets a fresh session plus the conversation handoff, like a new driver.
+    const changingDriver =
+      currentInfo.driverKind !== desiredInfo.driverKind ||
+      currentInfo.continuationIdentity.continuationKey !==
+        desiredInfo.continuationIdentity.continuationKey;
     if (changingDriver && activeSession?.status === "running") {
       return yield* new ProviderAdapterRequestError({
         provider: preferredProvider,
@@ -693,23 +699,6 @@ const make = Effect.gen(function* () {
             : thread.modelSelection,
         requestedModelSelection,
       });
-    }
-    if (
-      thread.session !== null &&
-      requestedModelSelection !== undefined &&
-      requestedModelSelection.instanceId !== currentInstanceId
-    ) {
-      if (
-        !changingDriver &&
-        currentInfo.continuationIdentity.continuationKey !==
-          desiredInfo.continuationIdentity.continuationKey
-      ) {
-        return yield* new ProviderAdapterRequestError({
-          provider: preferredProvider,
-          method: "thread.turn.start",
-          detail: `Thread '${threadId}' cannot switch from instance '${currentInstanceId}' to '${desiredInstanceId}' because their provider resume state is incompatible.`,
-        });
-      }
     }
     const project = yield* resolveProject(thread.projectId);
     const effectiveCwd = resolveThreadWorkspaceCwd({
@@ -867,7 +856,14 @@ const make = Effect.gen(function* () {
         new Error(`Thread '${input.threadId}' was not found in read model.`),
       );
     }
-    const routing = (yield* projectSettingsForThread(input.threadId)).agentRouting;
+    const projectRouting = (yield* projectSettingsForThread(input.threadId)).agentRouting;
+    // Projects routed before the router existed keep their override; they borrow the environment's router.
+    const routing = projectRouting.router
+      ? projectRouting
+      : {
+          ...projectRouting,
+          router: (yield* serverSettingsService.getSettings).agentRouting.router,
+        };
     const providers = yield* providerRegistry.getProviders;
     const detail =
       routing.mode !== "manual"
@@ -881,19 +877,35 @@ const make = Effect.gen(function* () {
     const active = (yield* providerService.listSessions()).find(
       (session) => session.threadId === input.threadId && session.activeTurnId !== undefined,
     );
+    const effectiveRouting =
+      active || (delegated && routing.mode !== "single")
+        ? { ...routing, mode: "manual" as const }
+        : routing;
+    // Slash commands go to the current agent unchanged; everything else in Auto asks the router.
+    const choice =
+      effectiveRouting.mode === "auto" && !input.messageText.trimStart().startsWith("/")
+        ? yield* Effect.gen(function* () {
+            const project = yield* resolveProject(thread.projectId);
+            return yield* chooseAgentRoute({
+              settings: effectiveRouting,
+              task: input.messageText,
+              cwd:
+                resolveThreadWorkspaceCwd({ thread, projects: project ? [project] : [] }) ??
+                process.cwd(),
+              textGeneration,
+            });
+          })
+        : undefined;
     const decision = yield* Effect.try({
       try: () =>
         resolveAgentRouting({
-          settings:
-            active || (delegated && routing.mode !== "single")
-              ? { ...routing, mode: "manual" }
-              : routing,
+          settings: effectiveRouting,
           current:
             input.modelSelection ??
             threadModelSelections.get(input.threadId) ??
             thread.modelSelection,
-          task: input.messageText,
           providers,
+          ...(choice ? { choice } : {}),
         }),
       catch: (cause) =>
         new ProviderAdapterValidationError({
@@ -943,7 +955,7 @@ const make = Effect.gen(function* () {
               modelSelection: decision.selection,
               ruleId: decision.ruleId ?? null,
               source: decision.source,
-              matched: decision.matched,
+              ...(decision.routerReason ? { detail: decision.routerReason } : {}),
             },
             turnId: null,
             createdAt: input.createdAt,

@@ -1,5 +1,5 @@
 import type { AgentRoutingSettings, ServerProvider } from "@t3tools/contracts";
-import { findRoutingModel } from "@t3tools/shared/agentRouting";
+import { findRoutingModel, routeDescription } from "@t3tools/shared/agentRouting";
 
 export { resolveAgentRouting, type AgentRoutingDecision } from "@t3tools/shared/agentRouting";
 
@@ -29,7 +29,7 @@ export function agentExecutionInstructions(
                   ? null
                   : (findRoutingModel(providers, rule.selection)?.model.name ??
                     rule.selection.model);
-              return `- ${rule.id}: ${rule.name}${model ? ` (${model})` : ""}${rule.description ? ` — ${rule.description}` : ""}`;
+              return `- ${rule.id}: ${rule.name}${model ? ` (${model})` : ""}${routeDescription(rule) ? ` — ${routeDescription(rule)}` : ""}`;
             }),
           `Agent limits: ${settings.maxConcurrentAgents} concurrent, ${settings.maxAgentsPerTask} per task, depth ${settings.maxDepth}.`,
         ].join("\n")

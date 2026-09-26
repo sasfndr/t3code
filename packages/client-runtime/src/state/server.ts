@@ -1071,6 +1071,11 @@ export function createServerEnvironmentAtoms<R, E>(
         key: ({ environmentId, input }) => JSON.stringify([environmentId, input]),
       },
     }),
+    previewRoute: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:orchestrator:preview-route",
+      tag: WS_METHODS.orchestratorPreviewRoute,
+      concurrency: { mode: "latest", key: ({ environmentId }) => environmentId },
+    }),
     refreshProviders: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:refresh-providers",
       tag: WS_METHODS.serverRefreshProviders,

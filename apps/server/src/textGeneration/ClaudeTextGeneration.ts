@@ -25,6 +25,7 @@ import {
   buildCommitMessagePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
+  buildRouteTaskPrompt,
 } from "./TextGenerationPrompts.ts";
 import {
   normalizeCliError,
@@ -102,7 +103,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle",
+      | "generateThreadTitle"
+      | "routeTask",
     value: unknown,
     detail: string,
   ): Effect.Effect<string, TextGenerationError> =>
@@ -132,7 +134,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "routeTask";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -410,10 +413,31 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       };
     });
 
+  const routeTask: NonNullable<TextGeneration.TextGeneration["Service"]["routeTask"]> = Effect.fn(
+    "ClaudeTextGeneration.routeTask",
+  )(function* (input) {
+    const { prompt, outputSchema } = buildRouteTaskPrompt({
+      message: input.message,
+      routes: input.routes,
+    });
+    const generated = yield* runClaudeJson({
+      operation: "routeTask",
+      cwd: input.cwd,
+      prompt,
+      outputSchemaJson: outputSchema,
+      modelSelection: input.modelSelection,
+    });
+    const routeId = input.routes.some((route) => route.id === generated.routeId)
+      ? generated.routeId
+      : null;
+    return { routeId, reason: generated.reason.trim().slice(0, 300) };
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    routeTask,
   } satisfies TextGeneration.TextGeneration["Service"];
 });

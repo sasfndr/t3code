@@ -169,6 +169,21 @@ export function AgentRoutingControl({
                 </Toggle>
               ))}
             </ToggleGroup>
+            {value.router ? (
+              <div className="flex items-center justify-between gap-3 text-xs">
+                <span className="text-muted-foreground">Router</span>
+                <ModelLine
+                  providers={providers}
+                  selection={value.router}
+                  effort={undefined}
+                  className="max-w-[62%] justify-end"
+                />
+              </div>
+            ) : (
+              <p className="text-xs text-warning">
+                Choose a router model in settings so Auto can pick routes.
+              </p>
+            )}
             {routes.length ? (
               <ul className="grid gap-1 text-xs">
                 {routes.slice(0, MAX_LISTED_ROUTES).map((rule) => (
@@ -190,7 +205,7 @@ export function AgentRoutingControl({
               </ul>
             ) : (
               <p className="text-xs text-muted-foreground">
-                No routes yet, so Auto keeps the current model.
+                No routes yet, so every task goes to Everything else.
               </p>
             )}
           </div>

@@ -14,6 +14,8 @@ import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resolveAgentRouting } from "../../orchestration/agentRouting.ts";
+import { chooseAgentRoute } from "../../orchestration/agentRouter.ts";
+import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 
 class AgentTaskError extends Schema.TaggedError<AgentTaskError>()("AgentTaskError", {
   message: Schema.String,
@@ -30,7 +32,7 @@ function overlap(left: string, right: string): boolean {
 export const AgentsToolkit = Toolkit.make(
   Tool.make("agent_task", {
     description:
-      "Run a scoped task with another configured coding agent, inspect its saved result, or stop it. Start requires a stable taskKey (retry with the same key is safe), objective, relevant context, and exclusive relative file paths (empty for read-only work). Use a routing ruleId to assign its specialty. All child work respects T3's model lock, delegation and concurrency settings. Do not edit a delegated agent's owned files until it finishes. Call read to collect its result and verify it before claiming completion.",
+      "Run a scoped task with another configured coding agent, inspect its saved result, or stop it. Start requires a stable taskKey (retry with the same key is safe), objective, relevant context, and exclusive relative file paths (empty for read-only work). Pass a routing ruleId to pick a specialist yourself, or omit it and T3's router assigns one from the objective. All child work respects T3's model lock, delegation and concurrency settings. Do not edit a delegated agent's owned files until it finishes. Call read to collect its result and verify it before claiming completion.",
     parameters: Schema.Struct({
       action: Schema.Literals(["start", "read", "stop", "list"]),
       taskKey: Schema.optional(
@@ -65,6 +67,11 @@ const make = Effect.gen(function* () {
   const query = yield* ProjectionSnapshotQuery;
   const registry = yield* ProviderRegistry;
   const settingsService = yield* ServerSettingsService;
+  // Optional so hosts without text generation still serve agent_task; routing then uses the default route.
+  const textGeneration: Pick<TextGeneration["Service"], "routeTask"> = Option.getOrElse(
+    yield* Effect.serviceOption(TextGeneration),
+    () => ({}),
+  );
   const crypto = yield* Crypto.Crypto;
   // Admission is serialized across all parents so two simultaneous MCP calls cannot exceed a limit.
   const admission = yield* Semaphore.make(1);
@@ -170,10 +177,12 @@ const make = Effect.gen(function* () {
               return yield* new AgentTaskError({
                 message: "Starting a task requires taskKey and objective.",
               });
-            const settings = resolveProjectSettings(
-              yield* settingsService.getSettings,
-              caller.projectId,
-            ).settings.agentRouting;
+            const serverSettings = yield* settingsService.getSettings;
+            const projectRouting = resolveProjectSettings(serverSettings, caller.projectId).settings
+              .agentRouting;
+            const settings = projectRouting.router
+              ? projectRouting
+              : { ...projectRouting, router: serverSettings.agentRouting.router };
             if (settings.delegation === "direct")
               return yield* new AgentTaskError({
                 message: "Delegation is disabled. Complete this task directly.",
@@ -230,13 +239,23 @@ const make = Effect.gen(function* () {
                 message: "The requested routing rule is unavailable.",
               });
             const providers = yield* registry.getProviders;
+            const workerSettings =
+              settings.mode === "single" ? settings : { ...settings, mode: "auto" as const };
+            // A named specialist is used as-is; otherwise the router reads the objective.
+            const choice = rule
+              ? { ruleId: rule.id }
+              : yield* chooseAgentRoute({
+                  settings: workerSettings,
+                  task: `${input.objective!}\n\n${input.context ?? ""}`.trim(),
+                  cwd: process.cwd(),
+                  textGeneration,
+                });
             const decision = yield* Effect.try({
               try: () =>
                 resolveAgentRouting({
-                  settings: settings.mode === "single" ? settings : { ...settings, mode: "auto" },
+                  settings: workerSettings,
                   current: caller.modelSelection,
-                  task: input.objective!,
-                  ...(rule ? { ruleId: rule.id } : {}),
+                  choice,
                   providers,
                 }),
               catch: (cause) =>

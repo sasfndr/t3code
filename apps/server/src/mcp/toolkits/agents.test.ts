@@ -25,6 +25,7 @@ import { ProjectionSnapshotQuery } from "../../orchestration/Services/Projection
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { delegatedDescendants } from "../../orchestration/agentTaskLinks.ts";
+import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 
 const rootId = ThreadId.make("root");
 const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-astra" };
@@ -40,6 +41,13 @@ const provider: ServerProvider = {
   models: [{ slug: selection.model, name: "GPT", isCustom: false, capabilities: null }],
   slashCommands: [],
   skills: [],
+};
+const design = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-5-5" };
+const claude: ServerProvider = {
+  ...provider,
+  instanceId: design.instanceId,
+  driver: ProviderDriverKind.make("claudeAgent"),
+  models: [{ slug: design.model, name: "Opus", isCustom: false, capabilities: null }],
 };
 const decodeThread = Schema.decodeSync(OrchestrationThread);
 function makeThread(id: ThreadId) {
@@ -64,7 +72,9 @@ function makeThread(id: ThreadId) {
 const harness = Effect.fnUntraced(function* (
   overrides: Partial<AgentRoutingSettings> = {},
   rejectStart = false,
+  routerAnswer: string | null = null,
 ) {
+  const routerCalls: string[] = [];
   const threads = new Map([[rootId, makeThread(rootId)]]);
   const commands: OrchestrationCommand[] = [];
   const settings = {
@@ -81,7 +91,14 @@ const harness = Effect.fnUntraced(function* (
     Layer.mock(ProjectionSnapshotQuery)({
       getThreadDetailById: (id) => Effect.sync(() => Option.fromNullishOr(threads.get(id))),
     }),
-    Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([provider]) }),
+    Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([provider, claude]) }),
+    Layer.mock(TextGeneration)({
+      routeTask: (input) =>
+        Effect.sync(() => {
+          routerCalls.push(input.message);
+          return { routeId: routerAnswer, reason: "test router" };
+        }),
+    }),
     Layer.mock(ServerSettingsService)({ getSettings: Effect.succeed(settings) }),
     Layer.mock(OrchestrationEngineService)({
       dispatch: (command) =>
@@ -128,7 +145,7 @@ const harness = Effect.fnUntraced(function* (
         capabilities: new Set<McpCapability>(),
       }),
     );
-  return { call, commands, threads };
+  return { call, commands, threads, routerCalls };
 });
 
 it.effect("locks delegated execution to the configured model and preserves task context", () =>
@@ -243,5 +260,39 @@ it.effect("counts running children from previous turns against the concurrency c
       .pipe(Effect.result);
     expect(result._tag).toBe("Failure");
     expect(h.commands.filter((c) => c.type === "thread.create")).toHaveLength(1);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("lets the router assign a specialist when the parent names none", () =>
+  Effect.gen(function* () {
+    const routes = {
+      mode: "auto" as const,
+      router: selection,
+      rules: [
+        {
+          id: "design",
+          name: "Design",
+          description: "Visual and frontend work",
+          enabled: true,
+          match: [],
+          selection: design,
+          efforts: { fast: "", balanced: "", thorough: "" },
+          fallback: null,
+        },
+      ],
+    };
+    const routed = yield* harness(routes, false, "design");
+    yield* routed.call({ action: "start", taskKey: "hero", objective: "Polish the hero section" });
+    expect(routed.routerCalls[0]).toContain("Polish the hero section");
+    expect(
+      routed.commands.find((command) => command.type === "thread.turn.start")?.modelSelection,
+    ).toEqual(design);
+
+    const named = yield* harness(routes, false, null);
+    yield* named.call({ action: "start", taskKey: "x", objective: "Anything", ruleId: "design" });
+    expect(named.routerCalls).toHaveLength(0);
+    expect(
+      named.commands.find((command) => command.type === "thread.turn.start")?.modelSelection,
+    ).toEqual(design);
   }).pipe(Effect.scoped),
 );

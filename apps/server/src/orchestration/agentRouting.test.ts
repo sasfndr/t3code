@@ -46,6 +46,7 @@ const settings: AgentRoutingSettings = {
     {
       id: "design",
       name: "Design",
+      description: "",
       enabled: true,
       match: ["UI", "design", "front-end"],
       selection: design,
@@ -108,5 +109,61 @@ describe("agent routing policy", () => {
     const instruction = agentExecutionInstructions(settings);
     expect(instruction).toContain("Do not spawn sub-agents");
     expect(instruction).toContain("one evolving brief");
+  });
+  it("routes to the rule with the most phrase hits, not merely the first match", () => {
+    const backendRule = {
+      ...settings.rules[0]!,
+      id: "backend",
+      name: "Backend",
+      match: ["API", "database", "migration"],
+      selection: backend,
+    };
+    const decision = route("Design the API database migration", {
+      rules: [settings.rules[0]!, backendRule],
+    });
+    expect(decision.ruleId).toBe("backend");
+    expect(decision.matched).toEqual(["API", "database", "migration"]);
+    expect(decision.reason).toBe("Routed to gpt-6-astra · high · Backend");
+  });
+  it("keeps rule order as the tie-breaker", () => {
+    const other = { ...settings.rules[0]!, id: "other", match: ["UI"], selection: backend };
+    expect(route("Tweak the UI", { rules: [settings.rules[0]!, other] }).ruleId).toBe("design");
+  });
+  it("uses the default route for unmatched work, with its priority effort", () => {
+    const decision = route("Summarise yesterday's notes", {
+      defaultRoute: { selection: design, efforts: { fast: "medium", balanced: "", thorough: "" } },
+      priority: "fast",
+    });
+    expect(decision.source).toBe("default");
+    expect(decision.selection).toEqual({ ...design, options: [{ id: "effort", value: "medium" }] });
+  });
+  it("keeps the current model when nothing matches and no default route exists", () => {
+    const decision = route("Summarise yesterday's notes");
+    expect(decision.source).toBe("unmatched");
+    expect(decision.selection).toEqual(backend);
+  });
+  it("assigns a forced specialist without matching the task text", () => {
+    const decision = resolveAgentRouting({
+      settings,
+      current: backend,
+      task: "Anything at all",
+      providers,
+      ruleId: "design",
+    });
+    expect(decision.selection.instanceId).toBe(design.instanceId);
+    expect(() =>
+      resolveAgentRouting({ settings, current: backend, task: "x", providers, ruleId: "nope" }),
+    ).toThrow("missing or disabled");
+  });
+  it("briefs delegating parents with each specialist's model and purpose", () => {
+    const instruction = agentExecutionInstructions(
+      {
+        ...settings,
+        delegation: "auto",
+        rules: [{ ...settings.rules[0]!, description: "Owns visual polish" }],
+      },
+      providers,
+    );
+    expect(instruction).toContain("- design: Design (claude-opus-5-5) — Owns visual polish");
   });
 });

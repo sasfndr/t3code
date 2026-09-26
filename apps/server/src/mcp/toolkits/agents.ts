@@ -233,12 +233,10 @@ const make = Effect.gen(function* () {
             const decision = yield* Effect.try({
               try: () =>
                 resolveAgentRouting({
-                  settings:
-                    settings.mode === "single"
-                      ? settings
-                      : { ...settings, mode: "auto", rules: rule ? [rule] : settings.rules },
+                  settings: settings.mode === "single" ? settings : { ...settings, mode: "auto" },
                   current: caller.modelSelection,
-                  task: rule ? (rule.match[0] ?? input.objective!) : input.objective!,
+                  task: input.objective!,
+                  ...(rule ? { ruleId: rule.id } : {}),
                   providers,
                 }),
               catch: (cause) =>

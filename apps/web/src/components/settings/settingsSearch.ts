@@ -18,6 +18,7 @@ export type SettingsPath =
   | "/settings/keybindings"
   | "/settings/snap-shot"
   | "/settings/providers"
+  | "/settings/orchestrator"
   | "/settings/integrations"
   | "/settings/source-control"
   | "/settings/storage"
@@ -89,6 +90,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/keybindings": "Keybindings",
   "/settings/snap-shot": "SnapShots",
   "/settings/providers": "Providers",
+  "/settings/orchestrator": "Orchestrator",
   "/settings/integrations": "Integrations",
   "/settings/source-control": "Source Control",
   "/settings/storage": "Storage",
@@ -131,12 +133,43 @@ const KEYBINDING_SEARCH_ITEMS = STATIC_KEYBINDING_COMMANDS.toSorted((left, right
 export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "orchestrator",
-    title: "Orchestrator",
-    to: "/settings/general",
-    scope: "project-defaults",
+    title: "Routing mode",
+    to: "/settings/orchestrator",
     searchTerms: [
-      "auto routing agents delegation model lock priority effort queued messages Muse Kimi",
+      "orchestrator",
+      "auto routing",
+      "manual",
+      "one model",
+      "model lock",
+      "single model",
     ],
+  },
+  {
+    id: "orchestrator-priority",
+    title: "Routing priority",
+    to: "/settings/orchestrator",
+    targetId: "orchestrator",
+    searchTerms: ["fast", "balanced", "thorough", "effort", "reasoning"],
+  },
+  {
+    id: "orchestrator-routes",
+    title: "Routes",
+    to: "/settings/orchestrator",
+    targetId: "orchestrator",
+    searchTerms: ["routing rules", "phrases", "fallback", "Claude", "GPT", "Grok", "Kimi", "Muse"],
+  },
+  {
+    id: "orchestrator-execution",
+    title: "Sub-agents",
+    to: "/settings/orchestrator",
+    searchTerms: ["delegation", "agents", "concurrency", "depth", "limits", "instructions"],
+  },
+  {
+    id: "orchestrator-queue",
+    title: "Combine queued messages",
+    to: "/settings/orchestrator",
+    targetId: "orchestrator-execution",
+    searchTerms: ["queue", "burst", "brief", "group messages"],
   },
   {
     id: "storage-worktrees",
@@ -849,6 +882,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   // environment at any selection. Neither needs a particular scope to render.
   "/settings/keybindings": null,
   "/settings/providers": null,
+  "/settings/orchestrator": "project-defaults",
   "/settings/integrations": null,
   "/settings/source-control": "environment-defaults",
   "/settings/storage": "project-defaults",

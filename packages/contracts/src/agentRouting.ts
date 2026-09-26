@@ -5,14 +5,25 @@ import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 export const AgentRoutingPriority = Schema.Literals(["fast", "balanced", "thorough"]);
 export type AgentRoutingPriority = typeof AgentRoutingPriority.Type;
+const AgentRoutingEfforts = Schema.Struct({
+  fast: Schema.String,
+  balanced: Schema.String,
+  thorough: Schema.String,
+});
+export type AgentRoutingEfforts = typeof AgentRoutingEfforts.Type;
+
 export const AgentRoutingRule = Schema.Struct({
   id: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
+  /** What this specialist is for. Parents read it when choosing a delegate. */
+  description: Schema.String.check(Schema.isMaxLength(2000)).pipe(
+    Schema.withDecodingDefault(Effect.succeed("")),
+  ),
   enabled: Schema.Boolean,
-  /** Plain words/phrases, never executable regular expressions. First matching rule wins. */
+  /** Plain words/phrases, never regular expressions. The rule with the most phrase hits wins; ties keep order. */
   match: Schema.Array(TrimmedNonEmptyString),
   selection: ModelSelection,
-  efforts: Schema.Struct({ fast: Schema.String, balanced: Schema.String, thorough: Schema.String }),
+  efforts: AgentRoutingEfforts,
   fallback: Schema.NullOr(ModelSelection),
 });
 export type AgentRoutingRule = typeof AgentRoutingRule.Type;
@@ -26,6 +37,10 @@ export const AgentRoutingSettings = Schema.Struct({
   ),
   singleModel: Schema.NullOr(ModelSelection).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   rules: Schema.Array(AgentRoutingRule).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  /** Auto mode's route for work no rule matches. Null keeps the thread's current model. */
+  defaultRoute: Schema.NullOr(
+    Schema.Struct({ selection: ModelSelection, efforts: AgentRoutingEfforts }),
+  ).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   delegation: Schema.Literals(["direct", "auto", "always"]).pipe(
     Schema.withDecodingDefault(Effect.succeed("direct" as const)),
   ),

@@ -5035,6 +5035,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         <AgentRoutingControl
           value={props.agentRouting}
           model={selectedModelSelection}
+          providers={providerStatuses}
           onChange={props.onAgentRoutingChange}
         />
       )}

@@ -939,7 +939,12 @@ const make = Effect.gen(function* () {
             tone: "info",
             kind: "orchestrator.routing",
             summary: decision.reason,
-            payload: { modelSelection: decision.selection, ruleId: decision.ruleId ?? null },
+            payload: {
+              modelSelection: decision.selection,
+              ruleId: decision.ruleId ?? null,
+              source: decision.source,
+              matched: decision.matched,
+            },
             turnId: null,
             createdAt: input.createdAt,
           },
@@ -957,7 +962,10 @@ const make = Effect.gen(function* () {
     }
     const executionInstructions = input.messageText.trimStart().startsWith("/")
       ? ""
-      : agentExecutionInstructions(headlessMuse ? { ...routing, delegation: "direct" } : routing);
+      : agentExecutionInstructions(
+          headlessMuse ? { ...routing, delegation: "direct" } : routing,
+          providers,
+        );
     const normalizedInput = toNonEmptyProviderInput(
       executionInstructions
         ? `${executionInstructions}\n\n${input.messageText}`

@@ -111,6 +111,10 @@
       "types": "./src/Struct.ts",
       "import": "./src/Struct.ts"
     },
+    "./agentRouting": {
+      "types": "./src/agentRouting.ts",
+      "import": "./src/agentRouting.ts"
+    },
     "./serverSettings": {
       "types": "./src/serverSettings.ts",
       "import": "./src/serverSettings.ts"

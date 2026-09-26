@@ -423,11 +423,14 @@ function makeProviderServiceLayer(
     readonly directory?: ProviderSessionDirectory.ProviderSessionDirectory["Service"];
     readonly handoffThread?: OrchestrationThread;
     readonly supportsConversationRollback?: boolean;
+    readonly requiresConversationHandoff?: boolean;
     readonly analyticsLayer?: Layer.Layer<AnalyticsService.AnalyticsService>;
     readonly registry?: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"];
   } = {},
 ) {
   const codex = makeFakeCodexAdapter(CODEX_DRIVER, input.supportsConversationRollback);
+  if (input.requiresConversationHandoff)
+    Object.assign(codex.adapter.capabilities, { requiresConversationHandoff: true });
   const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
   const cursor = makeFakeCodexAdapter(CURSOR_DRIVER);
   const registry =
@@ -5577,5 +5580,32 @@ transactionalRouting.layer("transactional provider replacement", (it) => {
           ["handoff-thread.md"],
         );
       }),
+  );
+});
+
+const statelessRouting = makeProviderServiceLayer({
+  handoffThread,
+  requiresConversationHandoff: true,
+});
+statelessRouting.layer("stateless conversation handoff", (it) => {
+  it.effect("replays saved context on every turn without a provider switch", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = handoffThread.id;
+      yield* provider.startSession(threadId, {
+        threadId,
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        runtimeMode: "approval-required",
+        cwd: fixtureCwd("stateless-workspace"),
+      });
+      for (const input of ["First follow-up", "Second follow-up"]) {
+        yield* provider.sendTurn({ threadId, input });
+        const prompt = statelessRouting.codex.sendTurn.mock.calls.at(-1)?.[0].input;
+        assert.ok(prompt?.includes("ORCHID"));
+        assert.ok(prompt?.includes(input));
+      }
+      yield* provider.stopSession({ threadId });
+    }),
   );
 });

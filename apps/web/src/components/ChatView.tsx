@@ -1,3 +1,4 @@
+import type { AgentRoutingSettings } from "@t3tools/contracts";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
@@ -265,6 +266,7 @@ import {
   useClientSettings,
   useClientSettingsHydrated,
   useEnvironmentSettings,
+  useUpdateEnvironmentSettings,
 } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { usePanelAnimationSettings, usePanelPresence } from "../panelAnimations";
@@ -1594,6 +1596,7 @@ export default function ChatView(props: ChatViewProps) {
   }, [routeKind, routeThreadRef, routeThreadState]);
   const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
   const settings = useEnvironmentSettings(environmentId);
+  const updateRoutingSettings = useUpdateEnvironmentSettings(environmentId);
   const setStickyComposerModelSelection = useComposerDraftStore(
     (store) => store.setStickyModelSelection,
   );
@@ -2159,6 +2162,23 @@ export default function ChatView(props: ChatViewProps) {
   const activeProjectSettings = useMemo(
     () => resolveProjectSettings(settings, activeProject?.id ?? null, activeProject ?? undefined),
     [activeProject, settings],
+  );
+  const setAgentRouting = useCallback(
+    (agentRouting: AgentRoutingSettings) => {
+      updateRoutingSettings(
+        activeProject
+          ? {
+              projectSettingsOverrides: {
+                [activeProject.id]: {
+                  ...settings.projectSettingsOverrides[activeProject.id],
+                  agentRouting,
+                },
+              },
+            }
+          : { agentRouting },
+      );
+    },
+    [activeProject, settings.projectSettingsOverrides, updateRoutingSettings],
   );
   const activeProjectScripts = useMemo(
     () => (activeProject ? resolveProjectScripts(settings, activeProject) : []),
@@ -8663,7 +8683,11 @@ export default function ChatView(props: ChatViewProps) {
   // after it was queued, or the turn ended. Only one leaves per boundary; the
   // take inside onSend re-anchors the rest.
   const sendQueuedMessage = useEffectEvent((message: QueuedComposerMessage) => {
-    void onSend(undefined, message.submissionIntent, undefined, message);
+    const combined =
+      activeProjectSettings.settings.agentRouting.groupQueuedMessages && activeThreadKey
+        ? (useQueuedMessageStore.getState().combineReady(activeThreadKey) ?? message)
+        : message;
+    void onSend(undefined, combined.submissionIntent, undefined, combined);
   });
   const nextQueuedMessage = queuedMessages[0] ?? null;
   const latestToolActivityId = useMemo(
@@ -8688,6 +8712,13 @@ export default function ChatView(props: ChatViewProps) {
     activeProviderStatus === null;
   useEffect(() => {
     if (!nextQueuedMessage || isSendBusy || queueBlockedByPendingRequest || queueSendGate) return;
+    if (
+      phase === "running" &&
+      (activeProjectSettings.settings.agentRouting.groupQueuedMessages ||
+        activeProviderStatus?.driver === "kimi" ||
+        activeProviderStatus?.driver === "muse")
+    )
+      return;
     if (sendInFlightRef.current) return;
     if (!isQueuedMessageDue({ message: nextQueuedMessage, phase, latestToolActivityId })) return;
     sendQueuedMessage(nextQueuedMessage);
@@ -8698,6 +8729,8 @@ export default function ChatView(props: ChatViewProps) {
     phase,
     queueBlockedByPendingRequest,
     queueSendGate,
+    activeProjectSettings.settings.agentRouting.groupQueuedMessages,
+    activeProviderStatus?.driver,
   ]);
 
   // The row handlers are read from refs at call-time so their identity stays
@@ -9397,6 +9430,14 @@ export default function ChatView(props: ChatViewProps) {
         nextModelSelection,
         { explicit: true },
       );
+      if (activeProjectSettings.settings.agentRouting.mode !== "manual") {
+        const routing = activeProjectSettings.settings.agentRouting;
+        setAgentRouting(
+          routing.mode === "single"
+            ? { ...routing, singleModel: nextModelSelection }
+            : { ...routing, mode: "manual" },
+        );
+      }
       setStickyComposerModelSelection(nextModelSelection);
       if (options?.focusComposer !== false) scheduleComposerFocus();
     },
@@ -9406,6 +9447,8 @@ export default function ChatView(props: ChatViewProps) {
       scheduleComposerFocus,
       setComposerDraftModelSelection,
       setStickyComposerModelSelection,
+      activeProjectSettings.settings.agentRouting,
+      setAgentRouting,
       providerStatuses,
       settings,
     ],
@@ -10094,6 +10137,8 @@ export default function ChatView(props: ChatViewProps) {
                       <ComposerSurface.Host>
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">
                           <ChatComposer
+                            agentRouting={activeProjectSettings.settings.agentRouting}
+                            onAgentRoutingChange={setAgentRouting}
                             multipleModelSelections={multipleModelSelections}
                             supportsMultipleModels={
                               serverConfig?.environment.capabilities.requiredWorktreeBootstrap ===

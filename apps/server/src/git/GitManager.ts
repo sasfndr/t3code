@@ -1,3 +1,4 @@
+import { resolveBackgroundModelSelection } from "@t3tools/shared/serverSettings";
 import * as Arr from "effect/Array";
 import * as Cache from "effect/Cache";
 import * as Context from "effect/Context";
@@ -2707,7 +2708,7 @@ export const make = Effect.gen(function* () {
           Effect.flatMap((settings) =>
             settings.sourceControlWriterModelSelection === null
               ? Effect.succeed({
-                  modelSelection: settings.textGenerationModelSelection,
+                  modelSelection: resolveBackgroundModelSelection(settings),
                   style: settings.sourceControlWritingStyle,
                 })
               : providerRegistry.getProviders.pipe(

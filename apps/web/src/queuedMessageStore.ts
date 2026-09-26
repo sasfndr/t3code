@@ -1,4 +1,8 @@
 import type { PreviewAnnotationPayload } from "@t3tools/contracts";
+import {
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+} from "@t3tools/contracts";
 import { create } from "zustand";
 
 import type { ComposerSubmissionIntent } from "./composer-logic";
@@ -36,6 +40,7 @@ export interface QueuedComposerMessage {
 }
 
 interface QueuedMessageStoreState {
+  combineReady: (threadKey: string) => QueuedComposerMessage | null;
   queuesByThreadKey: Record<string, QueuedComposerMessage[]>;
   /**
    * Bumped by `drain`. A send that took a message before a drain and finishes
@@ -69,6 +74,45 @@ const EMPTY_QUEUE: QueuedComposerMessage[] = [];
 
 /** In-memory only: a queued message is a live intent, not a draft worth persisting. */
 export const useQueuedMessageStore = create<QueuedMessageStoreState>()((set, get) => ({
+  combineReady: (threadKey) => {
+    const queue = get().queuesByThreadKey[threadKey] ?? [];
+    const first = queue[0];
+    if (!first || first.holdUntilUserAction) return first ?? null;
+    let merged = first;
+    let count = 1;
+    for (const next of queue.slice(1)) {
+      if (
+        next.holdUntilUserAction ||
+        JSON.stringify(next.submissionIntent) !== JSON.stringify(first.submissionIntent)
+      )
+        break;
+      const prompt = `${merged.prompt}\n\n[Follow-up message]\n${next.prompt}`;
+      if (
+        prompt.length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS ||
+        merged.images.length + merged.files.length + next.images.length + next.files.length >
+          PROVIDER_SEND_TURN_MAX_ATTACHMENTS
+      )
+        break;
+      merged = {
+        ...merged,
+        prompt,
+        images: [...merged.images, ...next.images],
+        files: [...merged.files, ...next.files],
+        terminalContexts: [...merged.terminalContexts, ...next.terminalContexts],
+        previewAnnotations: [...merged.previewAnnotations, ...next.previewAnnotations],
+        reviewComments: [...merged.reviewComments, ...next.reviewComments],
+      };
+      count++;
+    }
+    if (count > 1)
+      set((state) => ({
+        queuesByThreadKey: {
+          ...state.queuesByThreadKey,
+          [threadKey]: [merged, ...queue.slice(count)],
+        },
+      }));
+    return merged;
+  },
   queuesByThreadKey: {},
   drainGeneration: 0,
   enqueue: (threadKey, message) => {

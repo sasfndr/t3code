@@ -1,4 +1,7 @@
-import type { OrchestrationEvent } from "@t3tools/contracts";
+import { CommandId, type OrchestrationEvent } from "@t3tools/contracts";
+import * as Option from "effect/Option";
+import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { delegatedDescendantsFromActivities } from "../agentTaskLinks.ts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -41,6 +44,7 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
   const terminalManager = yield* TerminalManager.TerminalManager;
+  const query = yield* Effect.serviceOption(ProjectionSnapshotQuery);
 
   const stopProviderSession = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
     logCleanupCauseUnlessInterrupted({
@@ -60,6 +64,29 @@ const make = Effect.gen(function* () {
     event: ThreadDeletedEvent,
   ) {
     const { threadId } = event.payload;
+    yield* Effect.gen(function* () {
+      if (Option.isSome(query)) {
+        const activities = yield* query.value.listActivitiesByKind("orchestrator.parent", {
+          includeArchived: true,
+        });
+        for (const childThreadId of delegatedDescendantsFromActivities(
+          activities,
+          threadId,
+        ).toReversed()) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.delete",
+            commandId: CommandId.make(`delete-agent:${event.eventId}:${childThreadId}`),
+            threadId: childThreadId,
+          });
+        }
+      }
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Could not remove delegated conversations", {
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
     yield* stopProviderSession(threadId);
     yield* closeThreadTerminals(threadId);
   });

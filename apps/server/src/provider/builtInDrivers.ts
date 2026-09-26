@@ -27,6 +27,8 @@ import { GrokDriver, type GrokDriverEnv } from "./Drivers/GrokDriver.ts";
 import { OpenCodeDriver, type OpenCodeDriverEnv } from "./Drivers/OpenCodeDriver.ts";
 import { AntigravityDriver, type AntigravityDriverEnv } from "./Drivers/AntigravityDriver.ts";
 import type { AnyProviderDriver } from "./ProviderDriver.ts";
+import { KimiDriver } from "./Drivers/KimiDriver.ts";
+import { MuseDriver, type MuseDriverEnv } from "./Drivers/MuseDriver.ts";
 
 /**
  * Union of infrastructure services required to construct any built-in
@@ -39,7 +41,8 @@ export type BuiltInDriversEnv =
   | CursorDriverEnv
   | GrokDriverEnv
   | OpenCodeDriverEnv
-  | AntigravityDriverEnv;
+  | AntigravityDriverEnv
+  | MuseDriverEnv;
 
 /**
  * Ordered list of built-in drivers. Order matters only for tie-breaking in
@@ -53,4 +56,6 @@ export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv
   GrokDriver,
   OpenCodeDriver,
   AntigravityDriver,
+  KimiDriver,
+  MuseDriver,
 ];

@@ -16,6 +16,7 @@ import {
   isModelSelectionProviderEnabled,
   parsePersistedServerObservabilitySettings,
   resolveSourceControlWriterModelSelection,
+  resolveBackgroundModelSelection,
   resolveProjectAgentBrowserAccess,
   resolveProjectAutoPull,
 } from "./serverSettings.ts";
@@ -759,4 +760,38 @@ describe("serverSettings helpers", () => {
 
     expect(resolved.pauseWhenOnBattery).toBe(false);
   });
+});
+
+it("single-model lock controls background and source-control generation without fallback", () => {
+  const singleModel = createModelSelection(ProviderInstanceId.make("custom"), "only-model", [
+    { id: "effort", value: "medium" },
+  ]);
+  const settings = {
+    ...DEFAULT_SERVER_SETTINGS,
+    agentRouting: { ...DEFAULT_SERVER_SETTINGS.agentRouting, mode: "single" as const, singleModel },
+  };
+  expect(resolveBackgroundModelSelection(settings)).toEqual(singleModel);
+  expect(resolveSourceControlWriterModelSelection(settings, [])).toEqual(singleModel);
+  expect(() =>
+    resolveBackgroundModelSelection({
+      ...settings,
+      agentRouting: { ...settings.agentRouting, singleModel: null },
+    }),
+  ).toThrow("Choose a model");
+});
+
+it("replaces routing selections without carrying another model's effort options", () => {
+  const first = {
+    ...DEFAULT_SERVER_SETTINGS.agentRouting,
+    mode: "single" as const,
+    singleModel: createModelSelection(ProviderInstanceId.make("codex"), "gpt-6-astra", [
+      { id: "reasoningEffort", value: "high" },
+    ]),
+  };
+  const current = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { agentRouting: first });
+  const next = {
+    ...first,
+    singleModel: createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-5-5"),
+  };
+  expect(applyServerSettingsPatch(current, { agentRouting: next }).agentRouting).toEqual(next);
 });

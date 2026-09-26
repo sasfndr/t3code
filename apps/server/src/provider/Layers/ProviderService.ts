@@ -1780,7 +1780,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "pendingProviderHandoff" in payload &&
         payload.pendingProviderHandoff === true;
       let providerInput = input;
-      if (needsHandoff) {
+      if (needsHandoff || routed.adapter.capabilities.requiresConversationHandoff) {
         if (Option.isNone(projectionQuery)) {
           return yield* toValidationError(
             "ProviderService.sendTurn",

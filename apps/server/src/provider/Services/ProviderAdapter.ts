@@ -43,6 +43,8 @@ export type ProviderCompaction<TError> =
   | { readonly type: "slash-command"; readonly command: `/${string}` };
 
 export interface ProviderAdapterCapabilities {
+  /** Headless runtimes receive saved user-visible history on every turn. */
+  readonly requiresConversationHandoff?: boolean;
   /**
    * Declares whether changing the model on an existing session is supported.
    */

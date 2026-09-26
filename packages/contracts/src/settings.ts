@@ -1,4 +1,5 @@
 import { SshDeviceHostConfigs } from "./device.ts";
+import { AgentRoutingSettings, DEFAULT_AGENT_ROUTING_SETTINGS } from "./agentRouting.ts";
 import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
@@ -753,6 +754,32 @@ export const GrokSettings = makeProviderSettingsSchema(
 );
 export type GrokSettings = typeof GrokSettings.Type;
 
+const makeSubscriptionCliSettings = (binary: string) =>
+  makeProviderSettingsSchema(
+    {
+      enabled: Schema.Boolean.pipe(
+        Schema.withDecodingDefault(Effect.succeed(false)),
+        Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+      ),
+      binaryPath: makeBinaryPathSetting(binary).pipe(
+        Schema.annotateKey({
+          title: "Binary path",
+          description: `Path to the ${binary} subscription CLI.`,
+          providerSettingsForm: { placeholder: binary, clearWhenEmpty: "omit" },
+        }),
+      ),
+      customModels: Schema.Array(CustomModelSetting).pipe(
+        Schema.withDecodingDefault(Effect.succeed([])),
+        Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+      ),
+    },
+    { order: ["binaryPath"] },
+  );
+export const KimiSettings = makeSubscriptionCliSettings("kimi");
+export type KimiSettings = typeof KimiSettings.Type;
+export const MuseSettings = makeSubscriptionCliSettings("muse");
+export type MuseSettings = typeof MuseSettings.Type;
+
 /**
  * Antigravity ACP auth methods. Personal and Enterprise open a Google sign-in
  * in the browser. The API key and Agent Platform methods take credentials from
@@ -1004,6 +1031,7 @@ export const WorktreeCleanup = Schema.NullOr(
 export type WorktreeCleanup = typeof WorktreeCleanup.Type;
 
 export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
+  "agentRouting",
   "worktreeCleanup",
   "defaultModelSelection",
   "defaultRuntimeMode",
@@ -1031,6 +1059,7 @@ export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTIN
  * model, no dedicated writer model, never auto-settle).
  */
 export const ProjectSettingsOverrides = Schema.Struct({
+  agentRouting: Schema.optionalKey(AgentRoutingSettings),
   worktreeCleanup: Schema.optionalKey(WorktreeCleanup),
   defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
@@ -1085,6 +1114,9 @@ export const StorageCleanupSettings = Schema.Struct({
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
 export const ServerSettings = Schema.Struct({
+  agentRouting: AgentRoutingSettings.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_AGENT_ROUTING_SETTINGS)),
+  ),
   worktreeCleanup: WorktreeCleanup.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   storageCleanup: StorageCleanupSettings.pipe(
     Schema.withDecodingDefault(Effect.succeed(Schema.decodeSync(StorageCleanupSettings)({}))),
@@ -1445,6 +1477,7 @@ const OpenCodeSettingsPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  agentRouting: Schema.optionalKey(AgentRoutingSettings),
   worktreeCleanup: Schema.optionalKey(
     Schema.NullOr(
       Schema.Union([

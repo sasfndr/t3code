@@ -81,10 +81,19 @@ export function isModelSelectionProviderEnabled(
   );
 }
 
+/** A model lock also covers background naming/writing; never spend another subscription silently. */
+export function resolveBackgroundModelSelection(settings: ServerSettings): ModelSelection {
+  if (settings.agentRouting.mode !== "single") return settings.textGenerationModelSelection;
+  if (!settings.agentRouting.singleModel)
+    throw new Error("Choose a model for One model mode before running generation.");
+  return settings.agentRouting.singleModel;
+}
+
 export function resolveSourceControlWriterModelSelection(
   settings: ServerSettings,
   providers?: ReadonlyArray<ServerProvider>,
 ): ModelSelection {
+  if (settings.agentRouting.mode === "single") return resolveBackgroundModelSelection(settings);
   const selection = settings.sourceControlWriterModelSelection;
   if (!selection || !isModelSelectionProviderEnabled(settings, selection)) {
     return settings.textGenerationModelSelection;
@@ -369,6 +378,7 @@ export function applyServerSettingsPatch(
           ),
         }
       : {}),
+    ...(patch.agentRouting !== undefined ? { agentRouting: patch.agentRouting } : {}),
     ...(patch.defaultModelSelection !== undefined
       ? { defaultModelSelection: patch.defaultModelSelection }
       : {}),

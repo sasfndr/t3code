@@ -1,3 +1,4 @@
+import { AgentRoutingSettings } from "./AgentRoutingSettings";
 import { SettingsGroup } from "./SettingsGroup";
 import { Spinner } from "~/components/ui/spinner";
 import { NotificationSettings } from "./NotificationSettings";
@@ -3229,6 +3230,7 @@ export function GeneralSettingsPanel() {
         />
       </SettingsSection>
 
+      <AgentRoutingSettings />
       <SettingsSection id="about" title="About">
         {isElectron || HOSTED_APP_CHANNEL ? (
           <AboutVersionSection />

@@ -26,6 +26,31 @@ describe("queuedMessageStore", () => {
     useQueuedMessageStore.setState({ queuesByThreadKey: {}, drainGeneration: 0 });
   });
 
+  it("combines a burst in order and preserves messages for retry and stop", () => {
+    const store = useQueuedMessageStore.getState();
+    const first = store.enqueue("thread-a", makeMessage("Build the API"));
+    store.enqueue("thread-a", makeMessage("Use the existing schema"));
+    store.enqueue("thread-b", makeMessage("Unrelated"));
+    const combined = store.combineReady("thread-a")!;
+    expect(combined.id).toBe(first.id);
+    expect(combined.prompt).toBe("Build the API\n\n[Follow-up message]\nUse the existing schema");
+    expect(store.take("thread-a", combined.id, null)).toEqual(combined);
+    store.holdAtFront("thread-a", combined);
+    expect(store.drain("thread-a")[0]?.prompt).toBe(combined.prompt);
+    expect(useQueuedMessageStore.getState().queuesByThreadKey["thread-b"]?.[0]?.prompt).toBe(
+      "Unrelated",
+    );
+  });
+
+  it("never combines past a held message or changes a submission's intent", () => {
+    const store = useQueuedMessageStore.getState();
+    store.enqueue("thread-a", makeMessage("First"));
+    store.enqueue("thread-a", { ...makeMessage("Held"), holdUntilUserAction: true });
+    store.enqueue("thread-a", makeMessage("Third"));
+    expect(store.combineReady("thread-a")?.prompt).toBe("First");
+    expect(useQueuedMessageStore.getState().queuesByThreadKey["thread-a"]).toHaveLength(3);
+  });
+
   it("keeps messages in submission order per thread", () => {
     const { enqueue } = useQueuedMessageStore.getState();
     enqueue("thread-a", makeMessage("first"));

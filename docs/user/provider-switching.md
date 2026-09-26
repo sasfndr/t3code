@@ -23,6 +23,8 @@ Deleting the conversation removes it; startup cleans abandoned files and collaps
 snapshots left by earlier Switch builds. CLI-native histories remain with their
 providers because other apps may use them.
 
+For automatic routing, model locks, and Kimi/Muse setup, see [Orchestrator](orchestrator.md).
+
 ## Personal desktop build
 
 The macOS fork is named **T3 Code Switch**, uses `~/.t3-switch` for its own data,
@@ -50,7 +52,7 @@ To rebuild on an Apple Silicon Mac with the repository's development prerequisit
 vp i
 vp env exec --node 24.13.1 node scripts/build-desktop-artifact.ts \
   --platform mac --target zip --arch arm64 \
-  --build-version 0.0.42-switch.3 --output-dir ./release-switch
+  --build-version 0.0.42-switch.4 --output-dir ./release-switch
 ```
 
 The archive contains the app. Local builds are not notarized by Apple. Keep

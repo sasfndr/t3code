@@ -4,6 +4,8 @@ import {
   CodexSettings,
   CursorSettings,
   GrokSettings,
+  KimiSettings,
+  MuseSettings,
   OpenCodeSettings,
   ProviderDriverKind,
 } from "@t3tools/contracts";
@@ -16,6 +18,7 @@ import {
   type Icon,
   OpenAI,
   OpenCodeIcon,
+  ACPRegistryIcon,
 } from "../Icons";
 
 type ProviderSettingsSchema = {
@@ -81,6 +84,19 @@ const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
     label: "Antigravity",
     icon: AntigravityIcon,
     settingsSchema: AntigravitySettings,
+  },
+  {
+    value: ProviderDriverKind.make("kimi"),
+    label: "Kimi Code",
+    icon: ACPRegistryIcon,
+    settingsSchema: KimiSettings,
+  },
+  {
+    value: ProviderDriverKind.make("muse"),
+    label: "Muse",
+    icon: ACPRegistryIcon,
+    settingsSchema: MuseSettings,
+    badgeLabel: "Headless",
   },
 ];
 

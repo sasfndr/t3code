@@ -1,3 +1,5 @@
+import { AgentRoutingControl } from "./AgentRoutingControl";
+import type { AgentRoutingSettings } from "@t3tools/contracts";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
 import { isLocalEnvironmentDisabled } from "../../localEnvironment";
 import { usePrimaryEnvironmentId } from "../../state/environments";
@@ -1318,6 +1320,8 @@ export interface ChatComposerHandle {
 // --------------------------------------------------------------------------
 
 export interface ChatComposerProps {
+  agentRouting?: AgentRoutingSettings;
+  onAgentRoutingChange?: (value: AgentRoutingSettings) => void;
   composerDraftTarget: ScopedThreadRef | DraftId;
   environmentId: EnvironmentId;
   attachmentUploadsCapabilityKnown: boolean;
@@ -1869,6 +1873,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ),
     [providerStatuses, settings],
   );
+  const routingLock = props.agentRouting?.mode === "single" ? props.agentRouting.singleModel : null;
+  const manualTraits = !props.agentRouting || props.agentRouting.mode === "manual";
   const selectedProviderByThreadId = composerDraft.activeProvider ?? null;
   const {
     selectedProviderEntry,
@@ -1880,6 +1886,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       resolveComposerProviderSelection({
         entries: providerInstanceEntries,
         candidateInstanceIds: [
+          routingLock?.instanceId,
           selectedProviderByThreadId,
           activeThread?.session?.providerInstanceId,
           activeThreadModelSelection?.instanceId,
@@ -1891,6 +1898,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }),
     [
       activeProjectDefaultModelSelection?.instanceId,
+      routingLock?.instanceId,
       activeThread?.session?.providerInstanceId,
       activeThreadModelSelection?.instanceId,
       selectedProviderByThreadId,
@@ -1922,15 +1930,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const selectedProvider: ProviderDriverKind =
     selectedProviderEntry?.driverKind ?? requestedDriverKind;
 
-  const { modelOptions: composerModelOptions, selectedModel } = useEffectiveComposerModelState({
-    threadRef: composerDraftTarget,
-    providers: providerStatuses,
-    selectedProvider,
-    selectedInstanceId,
-    threadModelSelection: activeThreadModelSelection,
-    projectModelSelection: activeProjectDefaultModelSelection,
-    settings,
-  });
+  const { modelOptions: composerModelOptions, selectedModel: draftSelectedModel } =
+    useEffectiveComposerModelState({
+      threadRef: composerDraftTarget,
+      providers: providerStatuses,
+      selectedProvider,
+      selectedInstanceId,
+      threadModelSelection: activeThreadModelSelection,
+      projectModelSelection: activeProjectDefaultModelSelection,
+      settings,
+    });
+  const selectedModel = routingLock?.model ?? draftSelectedModel;
   const providerSendBlockReason = getAntigravitySendBlockReason(
     selectedProviderEntry?.snapshot,
     selectedModel,
@@ -2046,8 +2056,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     interactionMode: requestedInteractionMode,
   });
   const selectedModelSelection = useMemo<ModelSelection>(
-    () => createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
-    [selectedInstanceId, selectedModel, selectedModelOptionsForDispatch],
+    () =>
+      routingLock ??
+      createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
+    [routingLock, selectedInstanceId, selectedModel, selectedModelOptionsForDispatch],
   );
   const selectedModelForPicker = selectedModel;
   // Instance-keyed option list so the picker can show each configured
@@ -2631,18 +2643,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ],
   );
 
-  const providerTraitsMenuContent = renderProviderTraitsMenuContent({
-    provider: selectedProvider,
-    instanceId: selectedInstanceId,
-    ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
-    ...(routeKind === "draft" && draftId ? { draftId } : {}),
-    model: selectedModel,
-    models: selectedProviderModels,
-    modelOptions: composerModelOptions?.[selectedInstanceId],
-    prompt,
-    onPromptChange: setPromptFromTraits,
-    planModeEnabled: settings.planModeEnabled,
-  });
+  const providerTraitsMenuContent =
+    manualTraits &&
+    renderProviderTraitsMenuContent({
+      provider: selectedProvider,
+      instanceId: selectedInstanceId,
+      ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
+      ...(routeKind === "draft" && draftId ? { draftId } : {}),
+      model: selectedModel,
+      models: selectedProviderModels,
+      modelOptions: composerModelOptions?.[selectedInstanceId],
+      prompt,
+      onPromptChange: setPromptFromTraits,
+      planModeEnabled: settings.planModeEnabled,
+    });
   const providerTraitsPickerInput = {
     provider: selectedProvider,
     instanceId: selectedInstanceId,
@@ -2656,7 +2670,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     planModeEnabled: settings.planModeEnabled,
     isComposerOwned: true,
   } satisfies Parameters<typeof renderProviderTraitsPicker>[0];
-  const providerTraitsPicker = renderProviderTraitsPicker(providerTraitsPickerInput);
+  const providerTraitsPicker =
+    manualTraits && renderProviderTraitsPicker(providerTraitsPickerInput);
   const {
     controlsRef: restingComposerControlsRef,
     attachControls: attachRestingComposerControls,
@@ -5016,6 +5031,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           data-resting-controls-separator="true"
         />
       ) : null}
+      {props.agentRouting && props.onAgentRoutingChange && (
+        <AgentRoutingControl
+          value={props.agentRouting}
+          model={selectedModelSelection}
+          onChange={props.onAgentRoutingChange}
+        />
+      )}
       <ProviderModelPicker
         isComposerOwned
         disabled={providerCatalogPending || isSendBusy}

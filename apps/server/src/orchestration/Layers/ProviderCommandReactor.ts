@@ -1,4 +1,7 @@
+import { resolveBackgroundModelSelection } from "@t3tools/shared/serverSettings";
 import { withWorkspaceLease } from "../../workspace/workspaceLease.ts";
+import { agentExecutionInstructions, resolveAgentRouting } from "../agentRouting.ts";
+import { delegatedDescendantsFromActivities } from "../agentTaskLinks.ts";
 import {
   type ChatAttachment,
   CommandId,
@@ -864,6 +867,86 @@ const make = Effect.gen(function* () {
         new Error(`Thread '${input.threadId}' was not found in read model.`),
       );
     }
+    const routing = (yield* projectSettingsForThread(input.threadId)).agentRouting;
+    const providers = yield* providerRegistry.getProviders;
+    const detail =
+      routing.mode !== "manual"
+        ? yield* projectionSnapshotQuery.getThreadDetailById(input.threadId, {
+            activityKinds: ["orchestrator.parent"],
+          })
+        : Option.none();
+    const delegated =
+      Option.isSome(detail) &&
+      detail.value.activities.some((activity) => activity.kind === "orchestrator.parent");
+    const active = (yield* providerService.listSessions()).find(
+      (session) => session.threadId === input.threadId && session.activeTurnId !== undefined,
+    );
+    const decision = yield* Effect.try({
+      try: () =>
+        resolveAgentRouting({
+          settings:
+            active || (delegated && routing.mode !== "single")
+              ? { ...routing, mode: "manual" }
+              : routing,
+          current:
+            input.modelSelection ??
+            threadModelSelections.get(input.threadId) ??
+            thread.modelSelection,
+          task: input.messageText,
+          providers,
+        }),
+      catch: (cause) =>
+        new ProviderAdapterValidationError({
+          provider: "orchestrator",
+          operation: "route-turn",
+          issue: cause instanceof Error ? cause.message : "Could not resolve task routing.",
+        }),
+    });
+    const headlessMuse =
+      providers.find((provider) => provider.instanceId === decision.selection.instanceId)
+        ?.driver === "muse";
+    if (
+      headlessMuse &&
+      !delegated &&
+      routing.mode !== "manual" &&
+      routing.delegation !== "direct"
+    ) {
+      return yield* new ProviderAdapterValidationError({
+        provider: "orchestrator",
+        operation: "route-turn",
+        issue:
+          "Muse headless cannot host T3 delegation. Choose Direct execution or use a provider with T3 tools as the parent.",
+      });
+    }
+    if (routing.mode !== "manual") {
+      // A follow-up during active work steers that worker; provider changes occur at idle boundaries.
+      if (!active) {
+        input = { ...input, modelSelection: decision.selection };
+        if (!Equal.equals(thread.modelSelection, decision.selection)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.meta.update",
+            commandId: yield* serverCommandId("agent-routing"),
+            threadId: input.threadId,
+            modelSelection: decision.selection,
+          });
+        }
+        yield* orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId: yield* serverCommandId("agent-routing-decision"),
+          threadId: input.threadId,
+          activity: {
+            id: yield* serverEventId(),
+            tone: "info",
+            kind: "orchestrator.routing",
+            summary: decision.reason,
+            payload: { modelSelection: decision.selection, ruleId: decision.ruleId ?? null },
+            turnId: null,
+            createdAt: input.createdAt,
+          },
+          createdAt: input.createdAt,
+        });
+      }
+    }
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       ...(input.titleSeed !== undefined ? { titleSeed: input.titleSeed } : {}),
@@ -872,7 +955,14 @@ const make = Effect.gen(function* () {
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
     }
-    const normalizedInput = toNonEmptyProviderInput(input.messageText);
+    const executionInstructions = input.messageText.trimStart().startsWith("/")
+      ? ""
+      : agentExecutionInstructions(headlessMuse ? { ...routing, delegation: "direct" } : routing);
+    const normalizedInput = toNonEmptyProviderInput(
+      executionInstructions
+        ? `${executionInstructions}\n\n${input.messageText}`
+        : input.messageText,
+    );
     const normalizedAttachments = input.attachments ?? [];
     const activeSession = yield* providerService
       .listSessions()
@@ -935,7 +1025,7 @@ const make = Effect.gen(function* () {
       const settings = yield* projectSettingsForThread(input.threadId);
       const modelSelection =
         settings.sourceControlWriterModelSelection === null
-          ? settings.textGenerationModelSelection
+          ? resolveBackgroundModelSelection(settings)
           : resolveSourceControlWriterModelSelection(
               settings,
               yield* providerRegistry.getProviders,
@@ -985,8 +1075,8 @@ const make = Effect.gen(function* () {
     }) {
       const attachments = input.attachments ?? [];
       yield* Effect.gen(function* () {
-        const { textGenerationModelSelection: modelSelection } = yield* projectSettingsForThread(
-          input.threadId,
+        const modelSelection = resolveBackgroundModelSelection(
+          yield* projectSettingsForThread(input.threadId),
         );
 
         const generated = yield* textGeneration
@@ -1083,10 +1173,9 @@ const make = Effect.gen(function* () {
         thread,
         projects: project ? [project] : [],
       }) ?? process.cwd();
-    const { textGenerationModelSelection: modelSelection } = resolveProjectSettings(
-      yield* serverSettingsService.getSettings,
-      thread.projectId,
-    ).settings;
+    const modelSelection = resolveBackgroundModelSelection(
+      resolveProjectSettings(yield* serverSettingsService.getSettings, thread.projectId).settings,
+    );
     const generated = yield* textGeneration.generateThreadTitle({
       cwd,
       message,
@@ -1534,9 +1623,31 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const stopDelegatedTasks = Effect.fn("stopDelegatedTasks")(function* (
+    parentId: ThreadId,
+    createdAt: string,
+  ) {
+    const activities = yield* projectionSnapshotQuery.listActivitiesByKind("orchestrator.parent", {
+      includeArchived: true,
+    });
+    for (const childThreadId of delegatedDescendantsFromActivities(activities, parentId)) {
+      yield* orchestrationEngine.dispatch({
+        type: "thread.session.stop",
+        commandId: yield* serverCommandId("stop-delegated-task"),
+        threadId: childThreadId,
+        createdAt,
+      });
+    }
+  });
+
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
+    yield* stopDelegatedTasks(event.payload.threadId, event.payload.createdAt).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Could not stop delegated tasks", { cause: Cause.pretty(cause) }),
+      ),
+    );
     yield* cancelTurnsAfterCompaction(
       event.payload.threadId,
       "Context compaction was interrupted. Send this message again to continue.",
@@ -1727,6 +1838,11 @@ const make = Effect.gen(function* () {
   const processSessionStopRequested = Effect.fn("processSessionStopRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>,
   ) {
+    yield* stopDelegatedTasks(event.payload.threadId, event.payload.createdAt).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Could not stop delegated tasks", { cause: Cause.pretty(cause) }),
+      ),
+    );
     const thread = yield* resolveThreadShell(event.payload.threadId);
     if (!thread) {
       return;

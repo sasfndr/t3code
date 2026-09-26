@@ -130,6 +130,15 @@ const KEYBINDING_SEARCH_ITEMS = STATIC_KEYBINDING_COMMANDS.toSorted((left, right
  */
 export const SETTINGS_SEARCH_ITEMS = [
   {
+    id: "orchestrator",
+    title: "Orchestrator",
+    to: "/settings/general",
+    scope: "project-defaults",
+    searchTerms: [
+      "auto routing agents delegation model lock priority effort queued messages Muse Kimi",
+    ],
+  },
+  {
     id: "storage-worktrees",
     title: "Worktree cleanup",
     to: "/settings/storage",

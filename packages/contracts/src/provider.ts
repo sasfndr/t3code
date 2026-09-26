@@ -3,6 +3,7 @@ import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   ApprovalRequestId,
   EventId,
+  MessageId,
   IsoDateTime,
   ProviderItemId,
   ThreadId,
@@ -68,6 +69,8 @@ export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
 
 export const ProviderSendTurnInput = Schema.Struct({
   threadId: ThreadId,
+  /** The persisted user message boundary for a cross-provider handoff. */
+  sourceMessageId: Schema.optional(MessageId),
   /** Internal recovery signal. Allows an empty turn only for adapters that
       explicitly support promptless continuation. */
   continuation: Schema.optional(Schema.Boolean),

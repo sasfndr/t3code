@@ -1791,6 +1791,14 @@ const make = Effect.gen(function* () {
 
       const thread = yield* resolveThreadRuntimeContext(event.threadId);
       if (!thread) return;
+      // Delayed events from the old provider must not stop or append to a
+      // conversation that has already moved to a different harness.
+      if (
+        thread.session?.providerInstanceId &&
+        event.providerInstanceId &&
+        thread.session.providerInstanceId !== event.providerInstanceId
+      )
+        return;
 
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);

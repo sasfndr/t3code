@@ -2573,6 +2573,7 @@ export function resolveDesktopUpdateChannel(version: string): "latest" | "nightl
 // install can be pointed at one of these releases, and the build itself
 // reports that no update feed is configured instead of polling.
 export function isDesktopPreviewVersion(version: string): boolean {
+  if (version.includes("-switch.")) return true;
   return /-pr\./.test(version) || /-preview\.\d{8}\.\d+$/.test(version);
 }
 
@@ -2614,6 +2615,7 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 }
 
 export function resolveDesktopProductName(version: string): string {
+  if (version.includes("-switch.")) return "T3 Code Switch";
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
@@ -2639,7 +2641,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   arch?: typeof BuildArch.Type,
 ) {
   const buildConfig: Record<string, unknown> = {
-    appId: DESKTOP_APP_ID,
+    appId: version.includes("-switch.") ? "com.sasfndr.t3code.switch" : DESKTOP_APP_ID,
     productName: resolveDesktopProductName(version),
     artifactName: "T3-Code-${version}-${arch}.${ext}",
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
@@ -2697,7 +2699,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       protocols: [
         {
           name: "T3 Code",
-          schemes: ["t3code", "t3code-dev"],
+          schemes: version.includes("-switch.") ? ["t3code-switch"] : ["t3code", "t3code-dev"],
         },
       ],
       ...(signed ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : {}),
@@ -2751,7 +2753,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       protocols: [
         {
           name: "T3 Code",
-          schemes: ["t3code", "t3code-dev"],
+          schemes: version.includes("-switch.") ? ["t3code-switch"] : ["t3code", "t3code-dev"],
         },
       ],
       desktop: {

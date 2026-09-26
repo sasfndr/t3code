@@ -40,6 +40,19 @@ const makeEnvironment = (
   DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(makeEnvironmentLayer(overrides, env)));
 
 describe("DesktopEnvironment", () => {
+  it.effect("isolates the packaged Switch build from stock Electron state", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment(
+        { isPackaged: true, appVersion: "0.0.42-switch.1" },
+        { T3CODE_HOME: "/Users/alice/.t3-switch" },
+      );
+      assert.equal(environment.displayName, "T3 Code Switch");
+      assert.equal(environment.userDataDirName, "t3code-switch");
+      assert.equal(environment.legacyUserDataDirName, "t3code-switch");
+      assert.equal(environment.stateDir, "/Users/alice/.t3-switch/userdata");
+    }),
+  );
+
   it.effect("derives state paths and development identity inside Effect", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(

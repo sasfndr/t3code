@@ -145,6 +145,29 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
     }),
   );
 
+  it.effect("clears native resume state and runtime payload when switching drivers", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = ThreadId.make("cross-driver-binding");
+      yield* directory.upsert({
+        threadId,
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        resumeCursor: { threadId: "native-codex-id" },
+        runtimePayload: { activeTurnId: "old-turn", continueAfterServerUpdate: "old-turn" },
+      });
+      yield* directory.upsert({
+        threadId,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        runtimePayload: { pendingProviderHandoff: true },
+      });
+      const binding = Option.getOrThrow(yield* directory.getBinding(threadId));
+      expect(binding.resumeCursor).toBeNull();
+      expect(binding.runtimePayload).toEqual({ pendingProviderHandoff: true });
+    }),
+  );
+
   it.effect("keeps the existing binding when an insert conflicts", () =>
     Effect.gen(function* () {
       const directory = yield* ProviderSessionDirectory;

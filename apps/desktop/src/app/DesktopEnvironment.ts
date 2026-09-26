@@ -113,6 +113,9 @@ export function resolveDesktopAppBranding(input: {
   readonly appVersion: string;
 }): DesktopAppBranding {
   const stageLabel = resolveDesktopAppStageLabel(input);
+  if (input.appVersion.includes("-switch.")) {
+    return { baseName: "T3 Code Switch", stageLabel, displayName: "T3 Code Switch" };
+  }
   return {
     baseName: APP_BASE_NAME,
     stageLabel,
@@ -188,8 +191,13 @@ const make = Effect.fn("desktop.environment.make")(function* (
     joinPath: path.join,
     t3Home: config.t3Home,
   });
-  const userDataDirName = isDevelopment ? "t3code-dev" : "t3code";
-  const legacyUserDataDirName = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
+  const switchBuild = input.appVersion.includes("-switch.");
+  const userDataDirName = switchBuild ? "t3code-switch" : isDevelopment ? "t3code-dev" : "t3code";
+  const legacyUserDataDirName = switchBuild
+    ? "t3code-switch"
+    : isDevelopment
+      ? "T3 Code (Dev)"
+      : "T3 Code (Alpha)";
   const linuxApplicationsDir = path.join(
     Option.getOrElse(config.xdgDataHome, () => path.join(homeDirectory, ".local", "share")),
     "applications",

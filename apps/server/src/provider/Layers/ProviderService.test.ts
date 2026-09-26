@@ -20,6 +20,7 @@ import {
   EventId,
   MessageId,
   OrchestrationThreadShell,
+  OrchestrationThread,
   ProjectId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ProviderDriverKind,
@@ -416,6 +417,7 @@ const hasMetricSnapshot = (
 function makeProviderServiceLayer(
   input: {
     readonly directory?: ProviderSessionDirectory.ProviderSessionDirectory["Service"];
+    readonly handoffThread?: OrchestrationThread;
     readonly supportsConversationRollback?: boolean;
     readonly analyticsLayer?: Layer.Layer<AnalyticsService.AnalyticsService>;
     readonly registry?: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"];
@@ -451,7 +453,20 @@ function makeProviderServiceLayer(
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
-        Layer.provide(serverConfigTestLayer),
+        Layer.provide(
+          input.handoffThread
+            ? ServerConfig.layerTest(process.cwd(), fixtureCwdRoot).pipe(
+                Layer.provide(NodeServices.layer),
+              )
+            : serverConfigTestLayer,
+        ),
+        Layer.provide(
+          input.handoffThread
+            ? Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+                getThreadDetailById: () => Effect.succeed(Option.some(input.handoffThread!)),
+              })
+            : Layer.empty,
+        ),
         Layer.provideMerge(input.analyticsLayer ?? AnalyticsService.layerTest),
         Layer.provide(
           Layer.succeed(
@@ -5270,5 +5285,139 @@ describe("agent browser access", () => {
       );
       assert.deepEqual(issued, [{ threadId, capabilities: ["preview", "pull-requests"] }]);
     }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+const handoffThread = Schema.decodeUnknownSync(OrchestrationThread)({
+  id: "handoff-thread",
+  projectId: "handoff-project",
+  title: "Switch providers",
+  modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+  runtimeMode: "approval-required",
+  branch: null,
+  worktreePath: null,
+  latestTurn: null,
+  session: null,
+  deletedAt: null,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+  messages: [
+    {
+      id: "earlier",
+      role: "user",
+      text: "Remember the launch code is ORCHID.",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    },
+    {
+      id: "current",
+      role: "user",
+      text: "What is the launch code?",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-01-01T00:00:01.000Z",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    },
+  ],
+  activities: [],
+  checkpoints: [],
+});
+const handoffRouting = makeProviderServiceLayer({ handoffThread });
+handoffRouting.layer("cross-provider handoff", (it) => {
+  it.effect("persists context until accepted, retries a failed send, and only sends it once", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = handoffThread.id;
+      const cwd = fixtureCwd("handoff-workspace");
+      yield* provider.startSession(threadId, {
+        threadId,
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        runtimeMode: "approval-required",
+        cwd,
+      });
+      yield* provider.startSession(threadId, {
+        threadId,
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        runtimeMode: "approval-required",
+        cwd,
+      });
+      assert.equal(
+        handoffRouting.claude.startSession.mock.calls.at(-1)?.[0].resumeCursor,
+        undefined,
+      );
+      assert.equal(handoffRouting.codex.stopSession.mock.calls.at(-1)?.[0], threadId);
+      assert.equal(
+        (
+          Option.getOrThrow(yield* directory.getBinding(threadId)).runtimePayload as Record<
+            string,
+            unknown
+          >
+        ).pendingProviderHandoff,
+        true,
+      );
+      handoffRouting.claude.sendTurn.mockImplementationOnce(() =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: CLAUDE_AGENT_DRIVER,
+            method: "turn/start",
+            detail: "Temporarily unavailable",
+          }),
+        ),
+      );
+      const request = {
+        threadId,
+        sourceMessageId: MessageId.make("current"),
+        input: "What is the launch code?",
+      };
+      const failed = yield* Effect.exit(provider.sendTurn(request));
+      assert.equal(Exit.isFailure(failed), true);
+      assert.equal(
+        (
+          Option.getOrThrow(yield* directory.getBinding(threadId)).runtimePayload as Record<
+            string,
+            unknown
+          >
+        ).pendingProviderHandoff,
+        true,
+      );
+      // A server/adapter restart keeps the pending marker in the persisted binding.
+      yield* provider.stopSession({ threadId });
+      yield* provider.startSession(threadId, {
+        threadId,
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        runtimeMode: "approval-required",
+        cwd,
+      });
+      yield* provider.sendTurn(request);
+      const first = handoffRouting.claude.sendTurn.mock.calls.at(-1)?.[0].input;
+      assert.ok(first?.includes("Remember the launch code is ORCHID."));
+      assert.equal(first?.split("What is the launch code?").length, 2);
+      assert.equal(
+        (
+          Option.getOrThrow(yield* directory.getBinding(threadId)).runtimePayload as Record<
+            string,
+            unknown
+          >
+        ).pendingProviderHandoff,
+        false,
+      );
+      yield* provider.sendTurn({ threadId, input: "Next message" });
+      assert.equal(handoffRouting.claude.sendTurn.mock.calls.at(-1)?.[0].input, "Next message");
+      yield* provider.startSession(threadId, {
+        threadId,
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        runtimeMode: "approval-required",
+        cwd,
+      });
+      yield* provider.sendTurn(request);
+      assert.ok(handoffRouting.codex.sendTurn.mock.calls.at(-1)?.[0].input?.includes("ORCHID"));
+    }),
   );
 });

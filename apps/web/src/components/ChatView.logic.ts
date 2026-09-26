@@ -1017,7 +1017,14 @@ export function deriveLockedProvider(input: {
   threadProvider: string | null;
   providers: ReadonlyArray<Pick<ServerProvider, "instanceId" | "driver">>;
 }): ProviderDriverKind | null {
-  if (!threadHasStarted(input.thread)) {
+  // An idle conversation can move to another harness. Keep an active turn
+  // pinned until it settles so a model choice cannot interrupt tool work.
+  if (
+    !threadHasStarted(input.thread) ||
+    (input.thread?.session !== null &&
+      input.thread?.session?.status !== "running" &&
+      input.thread?.session?.status !== "starting")
+  ) {
     return null;
   }
   const sessionProvider = input.thread?.session?.providerName ?? null;
@@ -1040,7 +1047,10 @@ export function deriveLockedProvider(input: {
 }
 
 export function getStartedThreadModelChangeBlockReason(input: {
-  providers: ReadonlyArray<Pick<ServerProvider, "instanceId" | "requiresNewThreadForModelChange">>;
+  providers: ReadonlyArray<
+    Pick<ServerProvider, "instanceId" | "requiresNewThreadForModelChange"> &
+      Partial<Pick<ServerProvider, "driver">>
+  >;
   hasStartedSession: boolean;
   currentModelSelection: ModelSelection;
   currentProviderInstanceId?: ModelSelection["instanceId"] | null | undefined;
@@ -1065,6 +1075,13 @@ export function getStartedThreadModelChangeBlockReason(input: {
   const nextProvider = input.providers.find(
     (snapshot) => snapshot.instanceId === input.nextModelSelection.instanceId,
   );
+  if (
+    currentProvider?.driver &&
+    nextProvider?.driver &&
+    currentProvider.driver !== nextProvider.driver
+  ) {
+    return null;
+  }
   if (
     currentProvider?.requiresNewThreadForModelChange !== true &&
     nextProvider?.requiresNewThreadForModelChange !== true

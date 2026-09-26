@@ -6187,6 +6187,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         : null}
       <ComposerBanner.Dock>
         <ComposerBanner.Column>
+          {activeThread?.session?.providerName &&
+          activeThread.session.providerName !== selectedProvider &&
+          lockedProvider === null ? (
+            <ComposerBanner.Attachment>
+              <ComposerBanner.Root variant="info">
+                <ComposerBanner.Row>
+                  <ComposerBanner.Content>
+                    <p className="text-xs text-muted-foreground" role="status">
+                      Continue with {selectedProviderEntry?.displayName ?? "the selected provider"}{" "}
+                      on your next message. Your conversation and workspace carry over.
+                    </p>
+                  </ComposerBanner.Content>
+                </ComposerBanner.Row>
+              </ComposerBanner.Root>
+            </ComposerBanner.Attachment>
+          ) : null}
           <ComposerBannerStack
             key={activeThreadId}
             className="relative z-0"

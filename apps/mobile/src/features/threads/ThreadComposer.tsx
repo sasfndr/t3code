@@ -524,11 +524,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     [props.serverConfig, currentModelSelection],
   );
   const providerGroups = useMemo(() => groupByProvider(modelOptions), [modelOptions]);
-  // An existing thread is bound to its harness: sessions can't move between
-  // provider instances, so the picker only offers the thread's own group.
+  // Idle threads carry their saved conversation into the next harness.
   const threadProviderGroups = useMemo(
-    () => providerGroups.filter((group) => group.providerKey === currentModelSelection.instanceId),
-    [providerGroups, currentModelSelection.instanceId],
+    () =>
+      props.selectedThread.session?.status === "running" ||
+      props.selectedThread.session?.status === "starting"
+        ? providerGroups.filter((group) => group.providerKey === currentModelSelection.instanceId)
+        : providerGroups,
+    [providerGroups, currentModelSelection.instanceId, props.selectedThread.session?.status],
   );
   const currentModelOption =
     modelOptions.find(

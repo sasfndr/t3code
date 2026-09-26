@@ -4,6 +4,7 @@ import {
   CommandId,
   EventId,
   type ModelSelection,
+  type MessageId,
   type OrchestrationEvent,
   ProviderDriverKind,
   type ProjectId,
@@ -614,7 +615,7 @@ const make = Effect.gen(function* () {
       activeSession !== undefined &&
       activeSession.providerInstanceId !== undefined
         ? activeSession.providerInstanceId
-        : thread.modelSelection.instanceId;
+        : (thread.session?.providerInstanceId ?? thread.modelSelection.instanceId);
     const desiredModelSelection = requestedModelSelection ?? thread.modelSelection;
     const desiredInstanceId = desiredModelSelection.instanceId;
     const currentInfo = yield* providerService.getInstanceInfo(currentInstanceId).pipe(
@@ -668,7 +669,15 @@ const make = Effect.gen(function* () {
         createdAt,
       });
     }
-    if (thread.session !== null) {
+    const changingDriver = currentInfo.driverKind !== desiredInfo.driverKind;
+    if (changingDriver && activeSession?.status === "running") {
+      return yield* new ProviderAdapterRequestError({
+        provider: preferredProvider,
+        method: "thread.turn.start",
+        detail: "Stop the current response before switching providers.",
+      });
+    }
+    if (thread.session !== null && !changingDriver) {
       yield* rejectStartedThreadModelChangeIfRequired({
         threadId,
         currentModelSelection:
@@ -687,16 +696,10 @@ const make = Effect.gen(function* () {
       requestedModelSelection !== undefined &&
       requestedModelSelection.instanceId !== currentInstanceId
     ) {
-      if (currentInfo.driverKind !== desiredInfo.driverKind) {
-        return yield* new ProviderAdapterRequestError({
-          provider: preferredProvider,
-          method: "thread.turn.start",
-          detail: `Thread '${threadId}' is bound to driver '${currentInfo.driverKind}' and cannot switch to '${desiredInfo.driverKind}'.`,
-        });
-      }
       if (
+        !changingDriver &&
         currentInfo.continuationIdentity.continuationKey !==
-        desiredInfo.continuationIdentity.continuationKey
+          desiredInfo.continuationIdentity.continuationKey
       ) {
         return yield* new ProviderAdapterRequestError({
           provider: preferredProvider,
@@ -802,9 +805,10 @@ const make = Effect.gen(function* () {
         return existingSessionThreadId;
       }
 
-      const resumeCursor = shouldRestartForModelChange
-        ? undefined
-        : (activeSession?.resumeCursor ?? undefined);
+      const resumeCursor =
+        changingDriver || shouldRestartForModelChange
+          ? undefined
+          : (activeSession?.resumeCursor ?? undefined);
       yield* Effect.logInfo("provider command reactor restarting provider session", {
         threadId,
         existingSessionThreadId,
@@ -847,6 +851,7 @@ const make = Effect.gen(function* () {
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly messageText: string;
+    readonly sourceMessageId: MessageId;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
     readonly interactionMode?: "default" | "plan";
@@ -899,6 +904,7 @@ const make = Effect.gen(function* () {
 
     return {
       threadId: input.threadId,
+      sourceMessageId: input.sourceMessageId,
       ...(normalizedInput ? { input: normalizedInput } : {}),
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
@@ -1492,6 +1498,7 @@ const make = Effect.gen(function* () {
     }
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
+      sourceMessageId: message.id,
       messageText: projectComposerContextForProvider({
         text: message.text,
         records: message.context?.records ?? [],

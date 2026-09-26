@@ -53,6 +53,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as Stream from "effect/Stream";
 
+import { buildProviderHandoff } from "../providerHandoff.ts";
 import { appendUserInputAttachmentPaths } from "../userInputAttachments.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import * as ServerConfig from "../../config.ts";
@@ -385,11 +386,15 @@ function toRuntimePayloadFromSession(
   extra?: {
     readonly modelSelection?: unknown;
     readonly continueAfterServerUpdate?: TurnId;
+    readonly pendingProviderHandoff?: boolean;
     readonly lastRuntimeEvent?: string;
     readonly lastRuntimeEventAt?: string;
   },
 ): Record<string, unknown> {
   return {
+    ...(extra?.pendingProviderHandoff !== undefined
+      ? { pendingProviderHandoff: extra.pendingProviderHandoff }
+      : {}),
     cwd: session.cwd ?? null,
     model: session.model ?? null,
     activeTurnId: session.activeTurnId ?? null,
@@ -1064,6 +1069,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     extra?: {
       readonly modelSelection?: unknown;
       readonly continueAfterServerUpdate?: TurnId;
+      readonly pendingProviderHandoff?: boolean;
       readonly lastRuntimeEvent?: string;
       readonly lastRuntimeEventAt?: string;
     },
@@ -1530,12 +1536,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           providerInstanceId: resolvedInstanceId,
         };
 
+        // Start the replacement successfully before retiring the old harness.
         yield* stopStaleSessionsForThread({
           threadId,
           currentInstanceId: resolvedInstanceId,
         });
         yield* upsertSessionBinding(sessionWithInstance, threadId, {
           modelSelection: input.modelSelection,
+          ...(persistedBinding !== undefined && persistedBinding.provider !== resolvedProvider
+            ? { pendingProviderHandoff: true }
+            : {}),
         });
         yield* analytics.record("provider.session.started", {
           provider: sessionWithInstance.provider,
@@ -1717,6 +1727,79 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           allowRecovery: true,
         });
       }
+      const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+      const payload = binding?.runtimePayload;
+      const needsHandoff =
+        payload !== null &&
+        typeof payload === "object" &&
+        "pendingProviderHandoff" in payload &&
+        payload.pendingProviderHandoff === true;
+      let providerInput = input;
+      if (needsHandoff) {
+        if (Option.isNone(projectionQuery)) {
+          return yield* toValidationError(
+            "ProviderService.sendTurn",
+            "Saved conversation is unavailable for the provider switch. Retry when the server is ready.",
+          );
+        }
+        const detail = yield* projectionQuery.value
+          .getThreadDetailById(input.threadId, { activityKinds: [] })
+          .pipe(
+            Effect.mapError(() =>
+              toValidationError(
+                "ProviderService.sendTurn",
+                "Could not read the saved conversation for the provider switch. Please retry.",
+              ),
+            ),
+          );
+        if (Option.isNone(detail)) {
+          return yield* toValidationError(
+            "ProviderService.sendTurn",
+            "The conversation for this provider switch was not found.",
+          );
+        }
+        const handoffDir = pathService.join(serverConfig.stateDir, "provider-handoffs");
+        const transcriptPath = pathService.join(
+          handoffDir,
+          `${encodeURIComponent(input.threadId)}-${encodeURIComponent(input.sourceMessageId ?? "continuation")}.md`,
+        );
+        const handoff = yield* Effect.try({
+          try: () =>
+            buildProviderHandoff({
+              thread: detail.value,
+              ...(input.sourceMessageId !== undefined
+                ? { sourceMessageId: input.sourceMessageId }
+                : {}),
+              transcriptPath,
+              resolveAttachment: (attachment) =>
+                resolveAttachmentPath({ attachmentsDir: serverConfig.attachmentsDir, attachment }),
+            }),
+          catch: () =>
+            toValidationError(
+              "ProviderService.sendTurn",
+              "The saved conversation could not be prepared. Please retry the provider switch.",
+            ),
+        });
+        yield* fileSystem.makeDirectory(handoffDir, { recursive: true }).pipe(
+          Effect.andThen(
+            fileSystem.writeFileString(transcriptPath, handoff.transcript, { mode: 0o600 }),
+          ),
+          Effect.mapError(() =>
+            toValidationError(
+              "ProviderService.sendTurn",
+              "Could not save the conversation handoff. Check available disk space and retry.",
+            ),
+          ),
+        );
+        const combined = `${handoff.prompt}\n\n[Current user request]\n${input.input ?? "Continue the task."}`;
+        if (combined.length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
+          return yield* toValidationError(
+            "ProviderService.sendTurn",
+            "The message is too long to include the conversation handoff. Shorten it and retry.",
+          );
+        }
+        providerInput = { ...input, input: combined };
+      }
       metricProvider = routed.adapter.provider;
       metricModel = input.modelSelection?.model;
       yield* Effect.annotateCurrentSpan({
@@ -1742,7 +1825,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }),
         (turnMetadata) =>
           Effect.gen(function* () {
-            const turn = yield* routed.adapter.sendTurn(input);
+            const turn = yield* routed.adapter.sendTurn(providerInput);
             yield* associateTurnAnalytics({
               providerInstanceId: routed.instanceId,
               threadId: input.threadId,
@@ -1767,6 +1850,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         runtimePayload: {
           ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
           activeTurnId: turn.turnId,
+          // Only consume after the new harness accepts the context. Failed
+          // sends and server restarts must retry with the conversation intact.
+          ...(needsHandoff ? { pendingProviderHandoff: false } : {}),
           // Admission and marker consumption must survive the same restart.
           continueAfterServerUpdate: null,
           continueAfterServerUpdatePrepared: null,

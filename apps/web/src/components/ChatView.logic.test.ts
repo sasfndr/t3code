@@ -1145,7 +1145,22 @@ describe("resolveComposerProviderSelection", () => {
     ).toBe(importedEntry.instanceId);
   });
 
-  it("keeps the session driver authoritative over instance and draft selections", () => {
+  it.each(["ready", "error", "stopped"] as const)(
+    "unlocks an existing %s conversation for provider switching",
+    (status) => {
+      const original = entry("codex");
+      expect(
+        deriveLockedProvider({
+          thread: makeThread({ session: { ...readySession, status } }),
+          selectedProvider: "claudeAgent",
+          threadProvider: "codex",
+          providers: [original.snapshot],
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it("keeps the running session driver authoritative over instance and draft selections", () => {
     const selected = entry("claudeAgent", "claude_work");
     const sessionEntry = entry("ollama", "local_models");
     const thread = importedThread(selected.instanceId);
@@ -1156,6 +1171,7 @@ describe("resolveComposerProviderSelection", () => {
           ...thread,
           session: {
             ...readySession,
+            status: "running",
             providerName: sessionEntry.driverKind,
             providerInstanceId: sessionEntry.instanceId,
           },

@@ -29,7 +29,7 @@ For automatic routing, model locks, and Kimi/Muse setup, see [Orchestrator](orch
 
 The macOS fork is named **T3 Code Switch**, uses `~/.t3-switch` for its own data,
 and does not install stock T3 updates over the custom feature. It keeps the
-standard T3 interface. The stock app remains separately installed.
+standard T3 interface. Use Switch as your everyday app after migration.
 
 For a one-time import, run `python3 scripts/import-stock-state.py` before opening
 Switch. It copies stock conversations and attachments using SQLite's consistent
@@ -39,6 +39,13 @@ copied running turns. It refuses to overwrite an existing Switch database.
 Conversations created afterward in the two apps are separate. Avoid running the
 same imported thread in both apps at once because both point to the same project
 files and native provider history.
+
+If Switch only contains the earlier import, quit it and run
+`python3 scripts/refresh-switch-state.py` to bring across newer stock conversations
+and provider accounts while retaining Switch's routing and independent app login.
+The refresh refuses to overwrite independent Switch work. It keeps private rollback
+backups under `~/.t3-switch/migration-backups` and leaves stock data untouched.
+Previously running responses do not automatically restart; send a follow-up to continue.
 
 For installations originally imported by Switch 0.0.42-switch.1, quit Switch
 and run `python3 scripts/switch_state.py` once before reopening. This separates
@@ -57,3 +64,19 @@ vp env exec --node 24.13.1 node scripts/build-desktop-artifact.ts \
 
 The archive contains the app. Local builds are not notarized by Apple. Keep
 future upstream updates in the fork so they can be checked alongside this feature.
+
+## Updates
+
+Switch deliberately disables the stock desktop updater. Upstream releases will
+not arrive automatically in this installation, and downloading stock T3 again
+will not include these custom features. Your fork also does not currently have
+an automatic release service.
+
+When you want an update, ask your coding agent: “Update my T3 Code Switch fork
+from upstream, preserve provider switching and orchestration, test the changes,
+back up my data, and install the rebuilt app.” This is a maintenance task:
+upstream changes can conflict with the fork and need integration and verification.
+Keep using the current app until the replacement is checked. Replacing the app
+must retain `~/.t3-switch`; do not reimport stock state during ordinary updates.
+CLI providers update independently of the desktop app, so adapter compatibility
+also needs checking when their protocols change.

@@ -175,7 +175,7 @@ export function resolveAgentRouting(input: {
     if (!route) {
       return {
         selection: current,
-        reason: `No route matched · kept ${modelName(providers, current)}`,
+        reason: `Stayed on ${modelName(providers, current)} · no route fit`,
         source: "unmatched",
         usedFallback: false,
       };

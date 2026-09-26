@@ -127,6 +127,7 @@ import {
   SquarePenIcon,
   TerminalIcon,
   Undo2Icon,
+  WaypointsIcon,
   WrenchIcon,
   XIcon,
   ZapIcon,
@@ -4133,6 +4134,7 @@ function formatWorkingTimerNow(startIso: string): string {
 }
 
 type WorkEntryIconName =
+  | "route"
   | "bot"
   | "brain"
   | "browser"
@@ -4330,6 +4332,8 @@ function WorkEntryIcon({ name, className }: { name: WorkEntryIconName; className
   switch (name) {
     case "pull-request":
       return <PullRequestGlyph.pullRequest className={className} aria-hidden />;
+    case "route":
+      return <WaypointsIcon className={className} aria-hidden />;
     case "bot":
       return <BotIcon className={className} aria-hidden />;
     case "brain":
@@ -4466,6 +4470,7 @@ function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
   ) {
     return "message-circle";
   }
+  if (workEntry.sourceActivityKind === "orchestrator.routing") return "route";
   if (workEntry.toolSurface) return workEntry.toolSurface;
   const toolPresentation = resolveWorkEntryToolPresentation(workEntry);
   if (toolPresentation) return toolPresentation.icon;

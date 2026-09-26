@@ -998,6 +998,16 @@ export const make = Effect.gen(function* () {
 
   const captureFromShortcut = Effect.gen(function* () {
     if (shortcutSuppressed) return;
+    if (environment.platform === "darwin") {
+      const settings = yield* Ref.get(settingsRef);
+      // Without Screen Recording macOS returns only the wallpaper, so say so instead of capturing.
+      if (Electron.systemPreferences.getMediaAccessStatus("screen") !== "granted") {
+        const message = currentMacSnapShotPermissionMessage(settings.snapShotIncludeAccessibility);
+        yield* Ref.update(stateRef, (state) => ({ ...state, message }));
+        yield* Effect.sync(() => void Electron.shell.openExternal(MAC_SCREEN_CAPTURE_SETTINGS_URL));
+        return;
+      }
+    }
     shortcutVerified = true;
     const now = yield* Clock.currentTimeNanos;
     if (lastShortcutAt !== undefined && now - lastShortcutAt < SHORTCUT_COOLDOWN_NS) return;
@@ -1151,16 +1161,10 @@ export const make = Effect.gen(function* () {
       (environment.platform === "darwin"
         ? currentMacSnapShotPermissionMessage(settings.snapShotIncludeAccessibility)
         : null);
-    if (permissionMessage) {
-      yield* Ref.set(stateRef, {
-        mode,
-        shortcut,
-        shortcutRegistered: false,
-        shortcutMessage: null,
-        message: permissionMessage,
-      });
-      return;
-    }
+    // Claim the shortcut even while a permission is missing. Otherwise the keystroke falls through
+    // to whatever app is in front and SnapShots look broken with no explanation; capture reports
+    // the missing permission instead.
+    yield* Effect.annotateCurrentSpan({ "snapShot.permissionMessage": permissionMessage ?? "" });
     if (mode === "portal" && niriSocketPath()) {
       const registered = yield* Effect.tryPromise(async () => {
         const { startNiriCaptureShortcut } = await import("./NiriCaptureShortcut.ts");
@@ -1279,11 +1283,12 @@ export const make = Effect.gen(function* () {
       if (registered) registeredAccelerator = accelerator;
     }
 
+    yield* Effect.annotateCurrentSpan({ "snapShot.shortcutRegistered": registered });
     yield* Ref.set(stateRef, {
       mode,
       shortcut,
       shortcutRegistered: registered,
-      message: null,
+      message: permissionMessage,
       shortcutMessage: registered
         ? isModifierPairShortcut(shortcut)
           ? observedPairMessage(shortcut, environment.platform)

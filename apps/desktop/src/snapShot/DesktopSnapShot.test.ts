@@ -3176,7 +3176,8 @@ it.effect("flags revoked macOS permissions on read and re-registers once they re
         blocked.message,
         "Allow Screen Recording in System Settings, then restart T3 Code.",
       );
-      assert.isFalse(blocked.shortcutRegistered);
+      // The shortcut stays claimed so it never falls through to another app; capture reports the gap.
+      assert.isTrue(blocked.shortcutRegistered);
 
       mediaAccessStatusMock.mockReturnValue("granted");
       const recovered = yield* service.state;

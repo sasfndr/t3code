@@ -4897,6 +4897,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const additionalDirectories = [
         ...(input.cwd ? [input.cwd] : []),
         serverConfig.attachmentsDir,
+        path.join(serverConfig.stateDir, "provider-handoffs"),
       ];
       const queryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),

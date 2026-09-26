@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import * as Layer from "effect/Layer";
 import * as Effect from "effect/Effect";
 import { HttpServer } from "effect/unstable/http";
 import * as NetAddress from "effect/unstable/net/NetAddress";
@@ -162,4 +163,44 @@ it.effect("does not keep credentials of other threads alive", () =>
 
     expect(yield* registry.resolve(token)).toBeUndefined();
   }),
+);
+
+it.effect(
+  "stages a replacement without invalidating the old token and revokes each session independently",
+  () =>
+    Effect.gen(function* () {
+      const registry = yield* McpSessionRegistry.McpSessionRegistry;
+      const request = {
+        threadId: ThreadId.make("switch-thread"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        capabilities: new Set<never>(),
+      };
+      const original = (yield* McpSessionRegistry.issueActiveMcpCredential(request))!;
+      const candidate = (yield* McpSessionRegistry.issueActiveMcpCredential({
+        ...request,
+        providerInstanceId: ProviderInstanceId.make("grok"),
+        preserveExisting: true,
+      }))!;
+      const token = (credential: typeof original) => credential.config.authorizationHeader.slice(7);
+      expect(yield* registry.resolve(token(original))).toBeDefined();
+      expect(yield* registry.resolve(token(candidate))).toBeDefined();
+      yield* McpSessionRegistry.revokeActiveMcpProviderSession(candidate.config.providerSessionId);
+      expect(yield* registry.resolve(token(candidate))).toBeUndefined();
+      expect(yield* registry.resolve(token(original))).toBeDefined();
+      const accepted = (yield* McpSessionRegistry.issueActiveMcpCredential({
+        ...request,
+        preserveExisting: true,
+      }))!;
+      yield* McpSessionRegistry.revokeActiveMcpProviderSession(original.config.providerSessionId);
+      expect(yield* registry.resolve(token(original))).toBeUndefined();
+      expect(yield* registry.resolve(token(accepted))).toBeDefined();
+    }).pipe(
+      Effect.provide(
+        McpSessionRegistry.layer.pipe(
+          Layer.provide(Layer.succeed(HttpServer.HttpServer, fakeHttpServer)),
+          Layer.provide(Layer.succeed(ServerEnvironment.ServerEnvironment, fakeEnvironment)),
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    ),
 );

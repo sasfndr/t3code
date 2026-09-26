@@ -257,6 +257,7 @@ export interface ProviderServiceLiveOptions {
    * test see whether a credential was requested at all.
    */
   readonly issueMcpCredential?: typeof McpSessionRegistry.issueActiveMcpCredential;
+  readonly revokeMcpCredential?: typeof McpSessionRegistry.revokeActiveMcpProviderSession;
 }
 
 interface TurnAnalyticsMetadata {
@@ -497,10 +498,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   );
   const issueMcpCredential =
     options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;
+  const revokeMcpCredential =
+    options?.revokeMcpCredential ?? McpSessionRegistry.revokeActiveMcpProviderSession;
   const fileSystem = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const pendingCompactions = new Map<ThreadId, PendingCompaction>();
+  // A retiring adapter may publish its exit before the new orchestration
+  // binding commits. Fence those lifecycle events before asking it to stop.
+  const retiredSessionLifecycles = new Set<string>();
+  const sessionLifecycleKey = (instanceId: ProviderInstanceId, threadId: ThreadId) =>
+    JSON.stringify([instanceId, threadId]);
   const timedOutNativeCompactions = new Set<ThreadId>();
   const settleCompaction = (threadId: ThreadId, pending: PendingCompaction, terminal: string) =>
     Effect.gen(function* () {
@@ -953,10 +961,19 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     } satisfies Record<string, string>;
   });
 
-  const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
+  const prepareMcpSession = (
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+    preserveExisting = false,
+  ) =>
     Effect.gen(function* () {
       const capabilities = yield* agentAccessCapabilities(threadId);
-      const credential = yield* issueMcpCredential({ threadId, providerInstanceId, capabilities });
+      const credential = yield* issueMcpCredential({
+        threadId,
+        providerInstanceId,
+        capabilities,
+        ...(preserveExisting ? { preserveExisting: true } : {}),
+      });
       if (credential) {
         const deviceEnvironment = capabilities.has("device")
           ? yield* agentDeviceEnvironment
@@ -1098,6 +1115,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     event: ProviderRuntimeEvent,
   ): Effect.Effect<void> =>
     Effect.gen(function* () {
+      if (
+        retiredSessionLifecycles.has(sessionLifecycleKey(source.instanceId, event.threadId)) &&
+        (event.type === "session.exited" ||
+          event.type === "session.state.changed" ||
+          event.type === "session.started" ||
+          event.type === "thread.started")
+      )
+        return;
       const canonicalEvent = yield* Effect.sync(() =>
         correlateRuntimeEventWithInstance(source, event),
       );
@@ -1389,20 +1414,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                 return;
               }
 
+              const lifecycleKey = sessionLifecycleKey(instanceId, input.threadId);
+              retiredSessionLifecycles.add(lifecycleKey);
               yield* adapter.stopSession(input.threadId).pipe(
-                Effect.tap(() =>
-                  analytics.record("provider.session.stopped", {
-                    provider: adapter.provider,
-                  }),
-                ),
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("provider.session.stop-stale-failed", {
-                    threadId: input.threadId,
-                    provider: adapter.provider,
-                    cause,
+                Effect.onError(() =>
+                  Effect.sync(() => {
+                    retiredSessionLifecycles.delete(lifecycleKey);
                   }),
                 ),
               );
+              if (yield* adapter.hasSession(input.threadId)) {
+                retiredSessionLifecycles.delete(lifecycleKey);
+                return yield* toValidationError(
+                  "ProviderService.startSession",
+                  "The previous provider did not shut down. The switch was cancelled; retry after stopping it.",
+                );
+              }
+              yield* analytics.record("provider.session.stopped", { provider: adapter.provider });
             }),
       { discard: true },
     );
@@ -1514,39 +1542,56 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
         yield* clearTurnAnalyticsSession(resolvedInstanceId, threadId);
-        yield* prepareMcpSession(threadId, resolvedInstanceId);
-        const session = yield* adapter
-          .startSession({
+        const replacing =
+          persistedBinding !== undefined &&
+          persistedBinding.providerInstanceId !== resolvedInstanceId;
+        const previousMcp = McpProviderSession.readMcpProviderSession(threadId);
+        const stagedCredential = yield* prepareMcpSession(threadId, resolvedInstanceId, replacing);
+        const rollback = Effect.gen(function* () {
+          // Only the candidate is revoked; the previous provider keeps its credential.
+          if (replacing) {
+            if (stagedCredential)
+              yield* revokeMcpCredential(stagedCredential.config.providerSessionId);
+            if (previousMcp) McpProviderSession.setMcpProviderSession(previousMcp);
+            else McpProviderSession.clearMcpProviderSession(threadId);
+            if (yield* adapter.hasSession(threadId)) {
+              yield* adapter.stopSession(threadId);
+              if (yield* adapter.hasSession(threadId)) {
+                return yield* toValidationError(
+                  "ProviderService.startSession",
+                  "Replacement cleanup is incomplete. Stop the thread before retrying.",
+                );
+              }
+            }
+          } else yield* clearMcpSession(threadId);
+        });
+        const sessionWithInstance = yield* Effect.gen(function* () {
+          retiredSessionLifecycles.delete(sessionLifecycleKey(resolvedInstanceId, threadId));
+          const session = yield* adapter.startSession({
             ...input,
             providerInstanceId: resolvedInstanceId,
             ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
             ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
-          })
-          .pipe(Effect.onError(() => clearMcpSession(threadId)));
-
-        if (session.provider !== adapter.provider) {
-          yield* clearMcpSession(threadId);
-          return yield* toValidationError(
-            "ProviderService.startSession",
-            `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
-          );
-        }
-        const sessionWithInstance = {
-          ...session,
-          providerInstanceId: resolvedInstanceId,
-        };
-
-        // Start the replacement successfully before retiring the old harness.
-        yield* stopStaleSessionsForThread({
-          threadId,
-          currentInstanceId: resolvedInstanceId,
-        });
-        yield* upsertSessionBinding(sessionWithInstance, threadId, {
-          modelSelection: input.modelSelection,
-          ...(persistedBinding !== undefined && persistedBinding.provider !== resolvedProvider
-            ? { pendingProviderHandoff: true }
-            : {}),
-        });
+          });
+          if (session.provider !== adapter.provider) {
+            return yield* toValidationError(
+              "ProviderService.startSession",
+              `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
+            );
+          }
+          const next = { ...session, providerInstanceId: resolvedInstanceId };
+          yield* stopStaleSessionsForThread({ threadId, currentInstanceId: resolvedInstanceId });
+          yield* upsertSessionBinding(next, threadId, {
+            modelSelection: input.modelSelection,
+            ...(persistedBinding !== undefined && persistedBinding.provider !== resolvedProvider
+              ? { pendingProviderHandoff: true }
+              : {}),
+          });
+          if (replacing && previousMcp) yield* revokeMcpCredential(previousMcp.providerSessionId);
+          return next;
+        }).pipe(
+          Effect.catchCause((cause) => rollback.pipe(Effect.andThen(Effect.failCause(cause)))),
+        );
         yield* analytics.record("provider.session.started", {
           provider: sessionWithInstance.provider,
           runtimeMode: input.runtimeMode,
@@ -1761,7 +1806,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         const handoffDir = pathService.join(serverConfig.stateDir, "provider-handoffs");
         const transcriptPath = pathService.join(
           handoffDir,
-          `${encodeURIComponent(input.threadId)}-${encodeURIComponent(input.sourceMessageId ?? "continuation")}.md`,
+          `${encodeURIComponent(input.threadId)}.md`,
         );
         const handoff = yield* Effect.try({
           try: () =>
@@ -1780,10 +1825,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
               "The saved conversation could not be prepared. Please retry the provider switch.",
             ),
         });
-        yield* fileSystem.makeDirectory(handoffDir, { recursive: true }).pipe(
+        yield* fileSystem.makeDirectory(handoffDir, { recursive: true, mode: 0o700 }).pipe(
+          Effect.andThen(fileSystem.chmod(handoffDir, 0o700)),
           Effect.andThen(
-            fileSystem.writeFileString(transcriptPath, handoff.transcript, { mode: 0o600 }),
+            fileSystem.writeFileString(`${transcriptPath}.tmp`, handoff.transcript, {
+              mode: 0o600,
+            }),
           ),
+          Effect.andThen(fileSystem.rename(`${transcriptPath}.tmp`, transcriptPath)),
+          Effect.andThen(fileSystem.chmod(transcriptPath, 0o600)),
           Effect.mapError(() =>
             toValidationError(
               "ProviderService.sendTurn",
@@ -2163,6 +2213,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }
         timedOutNativeCompactions.delete(input.threadId);
         yield* clearTurnAnalyticsSession(routed.instanceId, input.threadId);
+        yield* stopStaleSessionsForThread({
+          threadId: input.threadId,
+          currentInstanceId: routed.instanceId,
+        });
         yield* clearMcpSession(input.threadId);
         yield* directory.upsert({
           threadId: input.threadId,

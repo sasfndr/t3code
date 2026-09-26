@@ -13,9 +13,15 @@ is needed. Choosing your previous provider later carries the updated conversatio
 back into a fresh session there.
 
 Selecting a model prepares the next message; it does not send a request by itself.
-If starting or sending fails, the conversation stays saved and the next attempt
-retains the handoff context. Switching accounts with incompatible native session
+If the replacement fails to start, the old session and its tool access remain usable.
+If sending fails, the next attempt retains the handoff context. A switch reports
+an error if the previous provider cannot be stopped. Switching accounts with incompatible native session
 storage within one provider remains unsupported.
+
+Each conversation keeps one private handoff transcript, updated on a switch.
+Deleting the conversation removes it; startup cleans abandoned files and collapses
+snapshots left by earlier Switch builds. CLI-native histories remain with their
+providers because other apps may use them.
 
 ## Personal desktop build
 
@@ -25,11 +31,18 @@ standard T3 interface. The stock app remains separately installed.
 
 For a one-time import, run `python3 scripts/import-stock-state.py` before opening
 Switch. It copies stock conversations and attachments using SQLite's consistent
-backup API, leaves stock state untouched, and disables automatic resumption of
+backup API, leaves stock state untouched, imports only provider credentials (not
+app login or remote-link credentials), and disables automatic resumption of
 copied running turns. It refuses to overwrite an existing Switch database.
 Conversations created afterward in the two apps are separate. Avoid running the
 same imported thread in both apps at once because both point to the same project
 files and native provider history.
+
+For installations originally imported by Switch 0.0.42-switch.1, quit Switch
+and run `python3 scripts/switch_state.py` once before reopening. This separates
+app authentication, clears copied browser/mobile pairings and remote links, and
+keeps conversations and provider logins. Remote clients need to pair with Switch
+again. Subsequent imports already have this isolation.
 
 To rebuild on an Apple Silicon Mac with the repository's development prerequisites:
 
@@ -37,7 +50,7 @@ To rebuild on an Apple Silicon Mac with the repository's development prerequisit
 vp i
 vp env exec --node 24.13.1 node scripts/build-desktop-artifact.ts \
   --platform mac --target zip --arch arm64 \
-  --build-version 0.0.42-switch.1 --output-dir ./release-switch
+  --build-version 0.0.42-switch.3 --output-dir ./release-switch
 ```
 
 The archive contains the app. Local builds are not notarized by Apple. Keep

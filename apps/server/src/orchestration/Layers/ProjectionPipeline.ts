@@ -1,3 +1,4 @@
+import { deleteHandoffFile, reconcileHandoffFiles } from "../../provider/handoffFiles.ts";
 import {
   ApprovalRequestId,
   isImportedAgentSessionMessageId,
@@ -395,6 +396,7 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
   const deleteThreadAttachments = Effect.fn("deleteThreadAttachments")(function* (
     threadId: string,
   ) {
+    yield* deleteHandoffFile(serverConfig.stateDir, threadId);
     const threadSegment = toSafeThreadAttachmentSegment(threadId);
     if (!threadSegment) {
       yield* Effect.logWarning("skipping attachment cleanup for unsafe thread id", {
@@ -2149,6 +2151,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         updatedAt: cleanupState?.updatedAt ?? "1970-01-01T00:00:00.000Z",
       });
       yield* Effect.forEach(projectors, bootstrapProjector, { concurrency: 1, discard: true });
+
+      const retainedThreads = yield* sql<{
+        thread_id: string;
+      }>`SELECT thread_id FROM projection_threads WHERE deleted_at IS NULL`;
+      yield* reconcileHandoffFiles(
+        serverConfig.stateDir,
+        retainedThreads.map((thread) => thread.thread_id),
+      ).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("handoff cleanup will retry at next startup", { cause }),
+        ),
+      );
 
       // Cleanup has its own cursor so retries never have to replay committed text.
       // All message and activity references are current before any files are removed.

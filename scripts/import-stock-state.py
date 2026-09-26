@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 import sqlite3
+from switch_state import clear_app_auth, PROVIDER_SECRET_PREFIXES
 
 source = Path.home() / ".t3" / "userdata"
 target = Path.home() / ".t3-switch" / "userdata"
@@ -23,11 +24,20 @@ with sqlite3.connect((source / "state.sqlite").as_uri() + "?mode=ro", uri=True) 
             SET runtime_payload_json = json_remove(runtime_payload_json,
                 '$.continueAfterServerUpdate', '$.continueAfterServerUpdatePrepared')
             WHERE json_valid(runtime_payload_json)""")
+        clear_app_auth(copied)
         assert copied.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         thread_count = copied.execute("SELECT count(*) FROM projection_threads").fetchone()[0]
-for name in ("attachments", "secrets", "themes", "snap-shots"):
+for name in ("attachments", "themes", "snap-shots"):
     if (source / name).exists():
         shutil.copytree(source / name, target / name, dirs_exist_ok=True)
+# Retain only explicitly configured provider credentials, never app login,
+# signing, pairing, or relay credentials from the stock installation.
+if (source / "secrets").exists():
+    (target / "secrets").mkdir(exist_ok=True, mode=0o700)
+    for secret in (source / "secrets").iterdir():
+        if secret.is_file() and secret.name.startswith(PROVIDER_SECRET_PREFIXES):
+            shutil.copy2(secret, target / "secrets" / secret.name)
+            (target / "secrets" / secret.name).chmod(0o600)
 for name in ("settings.json", "client-settings.json", "keybindings.json", "model-manifest.json"):
     if (source / name).exists():
         shutil.copy2(source / name, target / name)
@@ -40,4 +50,5 @@ settings_path.write_text(json.dumps(settings, indent=2) + "\n")
 settings_path.chmod(0o600)
 staging.chmod(0o600)
 staging.replace(destination)
+(target / "switch-auth-isolated-v1").write_text("App authentication isolated on import.\n")
 print(f"Imported {thread_count} conversations into T3 Code Switch. Stock state was read-only.")

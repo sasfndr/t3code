@@ -16,6 +16,8 @@ export interface McpCredentialRequest {
   readonly threadId: ThreadId;
   readonly providerInstanceId: ProviderInstanceId;
   readonly capabilities: ReadonlySet<McpInvocationContext.McpCapability>;
+  /** Keep the current credential usable until replacement startup commits. */
+  readonly preserveExisting?: boolean;
 }
 
 export interface McpIssuedCredential {
@@ -227,15 +229,21 @@ export const issueActiveMcpCredential = (
   request: McpCredentialRequest,
 ): Effect.Effect<McpIssuedCredential | undefined> =>
   activeMcpSessionRegistry
-    ? activeMcpSessionRegistry
-        .revokeThread(request.threadId)
-        .pipe(Effect.andThen(activeMcpSessionRegistry.issue(request)))
+    ? (request.preserveExisting
+        ? Effect.void
+        : activeMcpSessionRegistry.revokeThread(request.threadId)
+      ).pipe(Effect.andThen(activeMcpSessionRegistry.issue(request)))
     : Effect.undefined;
 
 /**
  * Refreshes the liveness of a thread's MCP credential. Called on every provider
  * turn so an active session is never mistaken for an abandoned one.
  */
+export const revokeActiveMcpProviderSession = (providerSessionId: string): Effect.Effect<void> =>
+  activeMcpSessionRegistry
+    ? activeMcpSessionRegistry.revokeProviderSession(providerSessionId)
+    : Effect.void;
+
 export const touchActiveMcpThread = (threadId: ThreadId): Effect.Effect<void> =>
   activeMcpSessionRegistry ? activeMcpSessionRegistry.touch(threadId) : Effect.void;
 

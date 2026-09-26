@@ -1817,7 +1817,7 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
         const path = yield* Path.Path;
         const projectionPipeline = yield* OrchestrationProjectionPipeline;
         const eventStore = yield* OrchestrationEventStore;
-        const { attachmentsDir } = yield* ServerConfig;
+        const { attachmentsDir, stateDir } = yield* ServerConfig;
         const now = "2026-01-01T00:00:00.000Z";
         const threadId = ThreadId.make("Thread Delete.Files");
         const attachmentId = "thread-delete-files-00000000-0000-4000-8000-000000000001";
@@ -1929,6 +1929,10 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
         assert.isTrue(yield* exists(threadFileAttachmentPath));
         assert.isTrue(yield* exists(otherThreadAttachmentPath));
 
+        const handoffRoot = path.join(stateDir, "provider-handoffs");
+        const handoffPath = path.join(handoffRoot, `${encodeURIComponent(threadId)}.md`);
+        yield* fileSystem.makeDirectory(handoffRoot, { recursive: true });
+        yield* fileSystem.writeFileString(handoffPath, "private conversation");
         yield* appendAndProject({
           type: "thread.deleted",
           eventId: EventId.make("evt-delete-files-4"),
@@ -1945,6 +1949,7 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
           },
         });
 
+        assert.isFalse(yield* exists(handoffPath));
         assert.isFalse(yield* exists(threadAttachmentPath));
         assert.isFalse(yield* exists(threadFileAttachmentPath));
         assert.isTrue(yield* exists(otherThreadAttachmentPath));

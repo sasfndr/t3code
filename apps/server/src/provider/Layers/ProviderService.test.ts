@@ -65,6 +65,8 @@ import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
+import type { ProviderServiceLiveOptions } from "./ProviderService.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { makeProviderServiceLive } from "./ProviderService.ts";
 import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
@@ -144,27 +146,28 @@ function makeFakeCodexAdapter(
   const sessions = new Map<ThreadId, ProviderSession>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
 
-  const startSession = vi.fn((input: ProviderSessionStartInput) =>
-    Effect.sync(() => {
-      const now = "2026-01-01T00:00:00.000Z";
-      const session: ProviderSession = {
-        provider,
-        ...(input.providerInstanceId !== undefined
-          ? { providerInstanceId: input.providerInstanceId }
-          : {}),
-        status: "ready",
-        runtimeMode: input.runtimeMode,
-        threadId: input.threadId,
-        resumeCursor: input.resumeCursor ?? {
-          opaque: `resume-${String(input.threadId)}`,
-        },
-        cwd: input.cwd ?? process.cwd(),
-        createdAt: now,
-        updatedAt: now,
-      };
-      sessions.set(session.threadId, session);
-      return session;
-    }),
+  const startSession = vi.fn(
+    (input: ProviderSessionStartInput): Effect.Effect<ProviderSession, ProviderAdapterError> =>
+      Effect.sync(() => {
+        const now = "2026-01-01T00:00:00.000Z";
+        const session: ProviderSession = {
+          provider,
+          ...(input.providerInstanceId !== undefined
+            ? { providerInstanceId: input.providerInstanceId }
+            : {}),
+          status: "ready",
+          runtimeMode: input.runtimeMode,
+          threadId: input.threadId,
+          resumeCursor: input.resumeCursor ?? {
+            opaque: `resume-${String(input.threadId)}`,
+          },
+          cwd: input.cwd ?? process.cwd(),
+          createdAt: now,
+          updatedAt: now,
+        };
+        sessions.set(session.threadId, session);
+        return session;
+      }),
   );
 
   const sendTurn = vi.fn(
@@ -416,6 +419,7 @@ const hasMetricSnapshot = (
 
 function makeProviderServiceLayer(
   input: {
+    readonly serviceOptions?: ProviderServiceLiveOptions;
     readonly directory?: ProviderSessionDirectory.ProviderSessionDirectory["Service"];
     readonly handoffThread?: OrchestrationThread;
     readonly supportsConversationRollback?: boolean;
@@ -448,7 +452,7 @@ function makeProviderServiceLayer(
 
   const layer = it.layer(
     Layer.mergeAll(
-      makeProviderServiceLive().pipe(
+      makeProviderServiceLive(input.serviceOptions).pipe(
         Layer.provide(NodeServices.layer),
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
@@ -2873,6 +2877,31 @@ routing.layer("ProviderServiceLive routing", (it) => {
       routing.codex.stopSession.mockClear();
       routing.claude.stopSession.mockClear();
 
+      const observed: ProviderRuntimeEvent[] = [];
+      const observer = yield* provider.streamEvents.pipe(
+        Stream.takeUntil((event) => event.eventId === "retired-drain"),
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            observed.push(event);
+          }),
+        ),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      const normalStop = routing.codex.stopSession.getMockImplementation()!;
+      routing.codex.stopSession.mockImplementationOnce((id) =>
+        Effect.gen(function* () {
+          routing.codex.emit({
+            type: "session.exited",
+            eventId: asEventId("retired-exit"),
+            provider: CODEX_DRIVER,
+            threadId: id,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            payload: {},
+          });
+          yield* normalStop(id);
+        }),
+      );
       const claudeSession = yield* provider.startSession(threadId, {
         provider: ProviderDriverKind.make("claudeAgent"),
         providerInstanceId: claudeAgentInstanceId,
@@ -2881,6 +2910,19 @@ routing.layer("ProviderServiceLive routing", (it) => {
         runtimeMode: "full-access",
       });
 
+      routing.codex.emit({
+        type: "turn.completed",
+        eventId: asEventId("retired-drain"),
+        provider: CODEX_DRIVER,
+        threadId,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        payload: { state: "completed" },
+      });
+      yield* Fiber.join(observer);
+      assert.equal(
+        observed.some((event) => event.eventId === "retired-exit"),
+        false,
+      );
       assert.equal(codexSession.provider, "codex");
       assert.equal(claudeSession.provider, "claudeAgent");
       assert.deepEqual(routing.codex.stopSession.mock.calls, [[threadId]]);
@@ -5419,5 +5461,121 @@ handoffRouting.layer("cross-provider handoff", (it) => {
       yield* provider.sendTurn(request);
       assert.ok(handoffRouting.codex.sendTurn.mock.calls.at(-1)?.[0].input?.includes("ORCHID"));
     }),
+  );
+});
+
+const credentialIds = new Set<string>();
+let credentialSerial = 0;
+const transactionalRouting = makeProviderServiceLayer({
+  handoffThread,
+  serviceOptions: {
+    issueMcpCredential: (request) =>
+      Effect.sync(() => {
+        if (!request.preserveExisting) credentialIds.clear();
+        const providerSessionId = `candidate-${++credentialSerial}`;
+        credentialIds.add(providerSessionId);
+        return {
+          config: {
+            environmentId:
+              "test-environment" as McpProviderSession.McpProviderSessionConfig["environmentId"],
+            threadId: request.threadId,
+            providerInstanceId: request.providerInstanceId,
+            providerSessionId,
+            endpoint: "http://127.0.0.1/mcp",
+            authorizationHeader: "Bearer test-only",
+            capabilities: request.capabilities,
+          },
+        };
+      }),
+    revokeMcpCredential: (id) =>
+      Effect.sync(() => {
+        credentialIds.delete(id);
+      }),
+  },
+});
+transactionalRouting.layer("transactional provider replacement", (it) => {
+  it.effect(
+    "preserves the original binding and credential after startup and shutdown failures, then rotates once",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+        const threadId = handoffThread.id;
+        const start = (driver: typeof CODEX_DRIVER, instanceId: typeof codexInstanceId) =>
+          provider.startSession(threadId, {
+            threadId,
+            provider: driver,
+            providerInstanceId: instanceId,
+            runtimeMode: "full-access",
+            cwd: fixtureCwd("transaction-workspace"),
+          });
+        yield* start(CODEX_DRIVER, codexInstanceId);
+        const original = McpProviderSession.readMcpProviderSession(threadId)!;
+        transactionalRouting.claude.startSession.mockImplementationOnce(() =>
+          Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: CLAUDE_AGENT_DRIVER,
+              method: "start",
+              detail: "startup failed",
+            }),
+          ),
+        );
+        assert.equal(
+          Exit.isFailure(yield* Effect.exit(start(CLAUDE_AGENT_DRIVER, claudeAgentInstanceId))),
+          true,
+        );
+        assert.equal(McpProviderSession.readMcpProviderSession(threadId), original);
+        assert.deepEqual([...credentialIds], [original.providerSessionId]);
+        assert.equal(yield* transactionalRouting.codex.adapter.hasSession(threadId), true);
+        transactionalRouting.codex.stopSession.mockImplementationOnce(() =>
+          Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: CODEX_DRIVER,
+              method: "stop",
+              detail: "shutdown failed",
+            }),
+          ),
+        );
+        assert.equal(
+          Exit.isFailure(yield* Effect.exit(start(CLAUDE_AGENT_DRIVER, claudeAgentInstanceId))),
+          true,
+        );
+        assert.equal(
+          Option.getOrThrow(yield* directory.getBinding(threadId)).provider,
+          CODEX_DRIVER,
+        );
+        assert.equal(yield* transactionalRouting.claude.adapter.hasSession(threadId), false);
+        assert.deepEqual([...credentialIds], [original.providerSessionId]);
+        // A lying adapter that resolves stop without actually stopping is rejected too.
+        transactionalRouting.codex.stopSession.mockImplementationOnce(() => Effect.void);
+        assert.equal(
+          Exit.isFailure(yield* Effect.exit(start(CLAUDE_AGENT_DRIVER, claudeAgentInstanceId))),
+          true,
+        );
+        assert.equal(yield* transactionalRouting.claude.adapter.hasSession(threadId), false);
+        yield* start(CLAUDE_AGENT_DRIVER, claudeAgentInstanceId);
+        assert.equal(yield* transactionalRouting.codex.adapter.hasSession(threadId), false);
+        assert.equal(credentialIds.has(original.providerSessionId), false);
+        assert.equal(credentialIds.size, 1);
+        for (let i = 0; i < 20; i++) {
+          yield* start(
+            i % 2 === 0 ? CODEX_DRIVER : CLAUDE_AGENT_DRIVER,
+            i % 2 === 0 ? codexInstanceId : claudeAgentInstanceId,
+          );
+          yield* provider.sendTurn({
+            threadId,
+            sourceMessageId: MessageId.make("current"),
+            input: "Continue",
+          });
+          assert.equal(credentialIds.size, 1);
+        }
+        const files = NodeFS.readdirSync(
+          NodePath.join(fixtureCwdRoot, "userdata", "provider-handoffs"),
+        );
+        assert.deepEqual(
+          files.filter((name) => name.startsWith("handoff-thread")),
+          ["handoff-thread.md"],
+        );
+      }),
   );
 });
